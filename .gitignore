@@ -20,3 +20,7 @@ misc/customprofiles
 .classpath
 .project
 !/.idea/runConfigurations
+bin
+.vscode
+.metals
+.bloop
