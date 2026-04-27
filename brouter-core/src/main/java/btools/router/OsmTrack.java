@@ -308,8 +308,7 @@ public final class OsmTrack {
 
 
   public void addNodes(OsmTrack t) {
-    for (OsmPathElement n : t.nodes)
-      addNode(n);
+    nodes.addAll(t.nodes);
     buildMap();
   }
 

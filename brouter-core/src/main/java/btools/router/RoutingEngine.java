@@ -2297,15 +2297,16 @@ public class RoutingEngine extends Thread {
       if (routingContext.inverseRouting) {
         element.setTime(totalTime - element.getTime());
         element.setEnergy(totalEnergy - element.getEnergy());
-        track.nodes.add(element);
-      } else {
-        track.nodes.add(0, element);
       }
+      track.nodes.add(element);
 
       if (nextElement != null) {
         distance += element.calcDistance(nextElement);
       }
       element = nextElement;
+    }
+    if (!routingContext.inverseRouting) {
+      java.util.Collections.reverse(track.nodes);
     }
     track.distance = distance;
     logInfo("track-length = " + track.distance);
@@ -2325,9 +2326,10 @@ public class RoutingEngine extends Thread {
     track.cost = oldTrack.cost;
 
     while (element != null) {
-      track.addNode(element);
+      track.nodes.add(element);
       element = element.origin;
     }
+    java.util.Collections.reverse(track.nodes);
     long lastId = 0;
     long id1 = match.getIdFromPos();
     long id0 = match.origin == null ? 0 : match.origin.getIdFromPos();
