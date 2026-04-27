@@ -24,21 +24,27 @@
       width: 420px;
       min-width: 320px;
       flex-shrink: 0;
-      background: #f8f9fa;
-      border-right: 1px solid #ddd;
+      background: #1e293b;
+      border-right: 1px solid #334155;
       display: flex;
       flex-direction: column;
       padding: 16px;
       gap: 12px;
       overflow-y: auto;
+      color: #94a3b8;
     }
 
-    h1 { font-size: 1.2rem; color: #333; }
+    /* Custom scrollbar to match dark theme */
+    #sidebar::-webkit-scrollbar { width: 6px; }
+    #sidebar::-webkit-scrollbar-track { background: #0f172a; }
+    #sidebar::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+
+    h1 { font-size: 1.2rem; color: #e2e8f0; }
 
     label {
       font-size: 0.8rem;
       font-weight: 600;
-      color: #555;
+      color: #94a3b8;
       display: block;
       margin-bottom: 3px;
     }
@@ -49,13 +55,21 @@
       width: 100%;
       min-width: 0;
       padding: 6px 8px;
-      border: 1px solid #ccc;
+      border: 1px solid #334155;
       border-radius: 4px;
       font-size: 0.85rem;
+      background: #0f172a;
+      color: #e2e8f0;
+    }
+    input[type="text"]:focus,
+    input[type="number"]:focus,
+    select:focus {
+      outline: none;
+      border-color: #2563eb;
     }
 
     .field { display: flex; flex-direction: column; }
-    .hint  { font-size: 0.72rem; color: #888; margin-top: 2px; }
+    .hint  { font-size: 0.72rem; color: #475569; margin-top: 2px; }
 
     button {
       padding: 8px 12px;
@@ -73,27 +87,27 @@
 
     #btn-add-waypoint {
       flex: 1;
-      background: #e5e7eb;
-      color: #374151;
+      background: #334155;
+      color: #cbd5e1;
       font-size: 0.82rem;
       padding: 6px 10px;
     }
-    #btn-add-waypoint:hover  { background: #d1d5db; }
+    #btn-add-waypoint:hover  { background: #475569; }
     #btn-add-waypoint.active { background: #2563eb; color: white; }
 
     #btn-reverse {
-      background: #e5e7eb; color: #374151;
+      background: #334155; color: #cbd5e1;
       font-size: 0.82rem; padding: 6px 10px;
     }
-    #btn-reverse:hover    { background: #d1d5db; }
-    #btn-reverse:disabled { opacity: 0.4; cursor: default; }
+    #btn-reverse:hover    { background: #475569; }
+    #btn-reverse:disabled { opacity: 0.35; cursor: default; }
 
     #btn-clear-all {
-      background: #e5e7eb; color: #374151;
+      background: #334155; color: #cbd5e1;
       font-size: 0.82rem; padding: 6px 10px;
     }
-    #btn-clear-all:hover    { background: #d1d5db; }
-    #btn-clear-all:disabled { opacity: 0.4; cursor: default; }
+    #btn-clear-all:hover    { background: #475569; }
+    #btn-clear-all:disabled { opacity: 0.35; cursor: default; }
 
     /* ── Waypoint list ───────────────────────────────────────────────── */
     #waypoint-list {
@@ -106,21 +120,21 @@
       display: flex;
       align-items: center;
       gap: 6px;
-      background: white;
-      border: 1px solid #e5e7eb;
+      background: #0f172a;
+      border: 1px solid #334155;
       border-radius: 4px;
       padding: 5px 8px;
       font-size: 0.78rem;
-      color: #374151;
+      color: #94a3b8;
       cursor: default;
-      transition: background 0.1s;
+      transition: background 0.1s, border-color 0.1s;
     }
     .wp-row.highlighted {
-      background: #eff6ff;
-      border-color: #bfdbfe;
+      background: #172554;
+      border-color: #2563eb;
     }
     .wp-row.drag-over {
-      border-top: 2px solid #2563eb;
+      border-top: 2px solid #60a5fa;
     }
     .wp-row.dragging {
       opacity: 0.4;
@@ -128,7 +142,7 @@
 
     .wp-handle {
       cursor: grab;
-      color: #9ca3af;
+      color: #475569;
       font-size: 0.9rem;
       padding: 0 2px;
       flex-shrink: 0;
@@ -147,24 +161,24 @@
       flex: 1;
       font-variant-numeric: tabular-nums;
       font-size: 0.75rem;
-      color: #6b7280;
+      color: #64748b;
     }
 
     .wp-btns { display: flex; gap: 3px; }
     .wp-btns button {
       padding: 2px 6px;
       font-size: 0.72rem;
-      background: #f1f5f9;
-      color: #374151;
-      border: 1px solid #e2e8f0;
+      background: #1e293b;
+      color: #94a3b8;
+      border: 1px solid #334155;
       border-radius: 3px;
     }
-    .wp-btns button:hover { background: #e2e8f0; }
+    .wp-btns button:hover { background: #334155; color: #e2e8f0; }
 
     /* ── Action buttons ──────────────────────────────────────────────── */
     #btn-download    { background: #16a34a; color: white; font-weight: 600; }
     #btn-download:hover    { background: #15803d; }
-    #btn-download:disabled { background: #86efac; cursor: not-allowed; }
+    #btn-download:disabled { background: #166534; color: #4ade80; cursor: not-allowed; }
 
     /* ── Locate map control ──────────────────────────────────────────── */
     .leaflet-control-locate a {
@@ -188,13 +202,13 @@
       border-radius: 4px;
       display: none;
     }
-    .status.error { background: #fee2e2; color: #b91c1c; display: block; }
-    .status.info  { background: #dbeafe; color: #1e40af; display: block; }
-    .status.ok    { background: #dcfce7; color: #15803d; display: block; }
+    .status.error { background: #450a0a; color: #fca5a5; display: block; }
+    .status.info  { background: #0c1a3a; color: #93c5fd; display: block; }
+    .status.ok    { background: #052e16; color: #86efac; display: block; }
 
     /* ── Profile settings panel ──────────────────────────────────────── */
     #profile-settings {
-      border: 1px solid #ddd;
+      border: 1px solid #334155;
       border-radius: 6px;
     }
 
@@ -202,15 +216,17 @@
       padding: 7px 10px;
       font-size: 0.82rem;
       font-weight: 600;
-      color: #374151;
+      color: #94a3b8;
       cursor: pointer;
-      background: #f1f5f9;
+      background: #0f172a;
       user-select: none;
       display: flex;
       justify-content: space-between;
       align-items: center;
+      border-radius: 6px;
     }
-    #profile-settings summary:hover { background: #e2e8f0; }
+    #profile-settings[open] summary { border-radius: 6px 6px 0 0; }
+    #profile-settings summary:hover { background: #1e293b; }
 
     #profile-settings-body {
       padding: 10px;
@@ -220,23 +236,27 @@
     }
 
     .param-row { display: flex; flex-direction: column; gap: 2px; }
-    .param-row label { font-size: 0.75rem; font-weight: 600; color: #374151; margin: 0; }
-    .param-desc { font-size: 0.7rem; color: #6b7280; }
+    .param-row label { font-size: 0.75rem; font-weight: 600; color: #cbd5e1; margin: 0; }
+    .param-desc { font-size: 0.7rem; color: #475569; }
     .param-row input[type="number"], .param-row select { font-size: 0.82rem; padding: 4px 6px; }
 
     .bool-row { flex-direction: row; align-items: center; gap: 8px; }
-    .bool-row label { font-size: 0.8rem; font-weight: 600; color: #374151; flex: 1; }
-    .bool-row input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; }
+    .bool-row label { font-size: 0.8rem; font-weight: 600; color: #cbd5e1; flex: 1; }
+    .bool-row input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; accent-color: #2563eb; }
 
-    .param-changed label { color: #2563eb; }
+    .param-changed label { color: #60a5fa; }
 
     #btn-reset-params {
       font-size: 0.75rem; padding: 4px 8px;
-      background: #f1f5f9; color: #374151; border: 1px solid #cbd5e1;
+      background: #334155; color: #94a3b8; border: 1px solid #475569;
     }
-    #btn-reset-params:hover { background: #e2e8f0; }
+    #btn-reset-params:hover { background: #475569; color: #e2e8f0; }
 
-    #params-loading { font-size: 0.78rem; color: #6b7280; padding: 6px 0; text-align: center; }
+    #params-loading { font-size: 0.78rem; color: #475569; padding: 6px 0; text-align: center; }
+
+    /* ── Stats panel ─────────────────────────────────────────────────── */
+    #stats { font-size: 0.8rem; color: #94a3b8; }
+    #stats strong { color: #e2e8f0; }
 
     /* ── Location marker ─────────────────────────────────────────────── */
     @keyframes loc-pulse {
@@ -442,7 +462,7 @@
   <div id="status" class="status"></div>
 
   <!-- Stats -->
-  <div id="stats" style="display:none; font-size:0.8rem; color:#374151;">
+  <div id="stats" style="display:none;">
     <strong>Route info</strong>
     <div id="stats-body"></div>
   </div>
@@ -824,7 +844,7 @@
       const resp = await fetch(`/profile-params/${encodeURIComponent(profile)}`);
       profileParams = await resp.json();
     } catch {
-      body.innerHTML = '<div id="params-loading" style="color:#b91c1c">Failed to load params.</div>';
+      body.innerHTML = '<div id="params-loading" style="color:#fca5a5">Failed to load params.</div>';
       return;
     }
     renderProfileParams(profile);
@@ -1106,7 +1126,7 @@
     const fields = [
       ['Total distance', 'track-length',  m  => (m / 1000).toFixed(2) + ' km'],
       ['Est. time',      'total-time',    s  => { const h = Math.floor(s/3600), min = Math.floor((s%3600)/60); return (h ? h+'h ' : '') + min + ' min'; }],
-      ['Energy',         'total-energy',  wh => wh + ' Wh'],
+      ['Energy',         'total-energy',  wh => (wh / 1000).toFixed(2) + ' kWh'],
     ];
     for (const [label, key, fmt] of fields)
       if (props[key] != null) rows.push(`<div>${label}: <strong>${fmt(props[key])}</strong></div>`);
@@ -1120,10 +1140,10 @@
       if (s.maxGrade !== null)
         rows.push(`<div>Max grade: <strong>${s.maxGrade.toFixed(1)}%</strong> &nbsp; Min grade: <strong>${s.minGrade.toFixed(1)}%</strong></div>`);
       rows.push(`<div style="margin-top:4px"><strong>Surface</strong></div>`);
-      rows.push(`<div>Paved: <strong>${fmt1(s.pavedM)} km</strong> <span style="color:#6b7280">(${pct(s.pavedM)}%)</span></div>`);
-      rows.push(`<div>Unpaved: <strong>${fmt1(s.unpavedM)} km</strong> <span style="color:#6b7280">(${pct(s.unpavedM)}%)</span></div>`);
+      rows.push(`<div>Paved: <strong>${fmt1(s.pavedM)} km</strong> <span style="color:#475569">(${pct(s.pavedM)}%)</span></div>`);
+      rows.push(`<div>Unpaved: <strong>${fmt1(s.unpavedM)} km</strong> <span style="color:#475569">(${pct(s.unpavedM)}%)</span></div>`);
       if (s.unknownM > 0)
-        rows.push(`<div>Unknown: <strong>${fmt1(s.unknownM)} km</strong> <span style="color:#6b7280">(${pct(s.unknownM)}%)</span></div>`);
+        rows.push(`<div>Unknown: <strong>${fmt1(s.unknownM)} km</strong> <span style="color:#475569">(${pct(s.unknownM)}%)</span></div>`);
     }
 
     body.innerHTML = rows.join('');
