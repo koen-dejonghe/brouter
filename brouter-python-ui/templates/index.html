@@ -509,9 +509,10 @@
   let addingMode   = false;
   let routeLayer   = null;
   let routeHitLayer = null; // transparent wide polyline for easier hover
-  let profileParams = [];
+  let routeGeom    = null; // dense [{lat, lon, cumDist}] from geometry coordinates
   let elevData     = null;
-  let elevMode     = 'gradient'; // 'gradient' | 'surface'
+  let elevMode     = 'gradient'; // 'gradient' | 'surface' | 'highway' | 'tracktype'
+  let profileParams = [];
   let hoverMarker  = null;
   let routeTimer   = null; // debounce handle for auto-route
   let clickTimer   = null; // guard against dblclick zoom
@@ -648,6 +649,7 @@
     renderWaypointList();
     if (routeLayer)    { map.removeLayer(routeLayer);    routeLayer    = null; }
     if (routeHitLayer) { map.removeLayer(routeHitLayer); routeHitLayer = null; }
+    routeGeom = null;
     document.getElementById('btn-download').disabled = true;
     document.getElementById('stats').style.display = 'none';
     setStatus('', '');
@@ -979,6 +981,7 @@
     if (waypoints.length < 2) {
       if (routeLayer)    { map.removeLayer(routeLayer);    routeLayer    = null; }
       if (routeHitLayer) { map.removeLayer(routeHitLayer); routeHitLayer = null; }
+      routeGeom = null;
       document.getElementById('btn-download').disabled = true;
       document.getElementById('stats').style.display = 'none';
       clearElevationProfile();
@@ -993,6 +996,7 @@
     setStatus('Calculating…', 'info');
     if (routeLayer)    { map.removeLayer(routeLayer);    routeLayer    = null; }
     if (routeHitLayer) { map.removeLayer(routeHitLayer); routeHitLayer = null; }
+    routeGeom = null;
 
     try {
       const qs   = buildRouteParams(lonlats, null);
@@ -1004,24 +1008,54 @@
         return;
       }
 
-      routeLayer = L.geoJSON(data, {
-        style: { color: '#2563eb', weight: 4, opacity: 0.85 },
-        interactive: false,   // hit-detection handled by routeHitLayer
-      }).addTo(map);
-
-      // Wide transparent polyline for comfortable hover hit-area
+      // Build surface-split polylines (paved=solid, unpaved=dashed, unknown=semi-transparent)
+      const segments = buildSurfaceLines(data);
       const geomCoords = data.features?.[0]?.geometry?.coordinates;
-      if (geomCoords) {
-        routeHitLayer = L.polyline(
-          geomCoords.map(c => [c[1], c[0]]),
-          { weight: 20, opacity: 0, interactive: true }
-        ).addTo(map);
+      const allLatLngs = geomCoords ? geomCoords.map(c => [c[1], c[0]]) : [];
+
+      if (segments) {
+        const layers = segments.map(({ latlngs, category }) => L.polyline(latlngs, {
+          color:     '#2563eb',
+          weight:    category === 'unpaved' ? 3 : 4,
+          opacity:   category === 'unknown' ? 0.55 : 0.85,
+          dashArray: category === 'unpaved' ? '10, 8' : null,
+          interactive: false,
+        }));
+        routeLayer = L.layerGroup(layers).addTo(map);
+      } else {
+        // Fallback: plain line if messages unavailable
+        routeLayer = L.geoJSON(data, {
+          style: { color: '#2563eb', weight: 4, opacity: 0.85 },
+          interactive: false,
+        }).addTo(map);
+      }
+
+      // Build dense geometry lookup for smooth route hover
+      routeGeom = null;
+      if (geomCoords && geomCoords.length >= 2) {
+        let cum = 0;
+        routeGeom = geomCoords.map((c, i) => {
+          if (i > 0) {
+            const [lon1, lat1] = geomCoords[i - 1];
+            const [lon2, lat2] = c;
+            const dLat = (lat2 - lat1) * 111320;
+            const dLon = (lon2 - lon1) * 111320 * Math.cos((lat1 + lat2) / 2 * Math.PI / 180);
+            cum += Math.sqrt(dLat * dLat + dLon * dLon);
+          }
+          return { lat: c[1], lon: c[0], cumDist: cum };
+        });
+      }
+
+      // Wide transparent hit-area polyline for hover
+      if (allLatLngs.length) {
+        routeHitLayer = L.polyline(allLatLngs, { weight: 20, opacity: 0.001, interactive: true }).addTo(map);
         routeHitLayer.on('mousemove', onRouteMouseMove);
         routeHitLayer.on('mouseout',  onRouteMouseOut);
       }
 
-      // Only fit bounds when showing a new route (not on every update)
-      if (wasEmpty) map.fitBounds(routeLayer.getBounds(), { padding: [30, 30] });
+      // Only fit bounds on first route display
+      if (wasEmpty && allLatLngs.length)
+        map.fitBounds(L.latLngBounds(allLatLngs), { padding: [30, 30] });
 
       showStats(data?.features?.[0]?.properties ?? {}, data);
       setStatus('Route calculated.', 'ok');
@@ -1055,6 +1089,75 @@
         return 'paved';
     }
     return 'unknown';
+  }
+
+  /**
+   * Split the route geometry into runs of the same surface category.
+   * Returns [{latlngs: [[lat,lon],...], category: 'paved'|'unpaved'|'unknown'}]
+   * or null if data is insufficient.
+   */
+  function buildSurfaceLines(geojson) {
+    const coords = geojson?.features?.[0]?.geometry?.coordinates;
+    const msgs   = geojson?.features?.[0]?.properties?.messages;
+    if (!coords || coords.length < 2 || !msgs || msgs.length < 2) return null;
+
+    const cols  = msgs[0];
+    const iDist = cols.indexOf('Distance');
+    const iWay  = cols.indexOf('WayTags');
+    if (iDist < 0) return null;
+
+    // Build message boundaries: cumulative distance → surface category.
+    // Each boundary marks the END of a segment with that category.
+    const boundaries = [];
+    let cum = 0;
+    for (let r = 1; r < msgs.length; r++) {
+      cum += parseInt(msgs[r][iDist], 10) || 0;
+      const tags = iWay >= 0 ? parseTags(msgs[r][iWay]) : {};
+      boundaries.push({ cumDist: cum, category: surfaceCategory(tags) });
+    }
+
+    // Compute cumulative distances along geometry coordinates
+    const geomCum = new Float64Array(coords.length);
+    for (let i = 1; i < coords.length; i++) {
+      const [lon1, lat1] = coords[i - 1];
+      const [lon2, lat2] = coords[i];
+      const dLat = (lat2 - lat1) * 111320;
+      const dLon = (lon2 - lon1) * 111320 * Math.cos((lat1 + lat2) / 2 * Math.PI / 180);
+      geomCum[i] = geomCum[i - 1] + Math.sqrt(dLat * dLat + dLon * dLon);
+    }
+
+    // For a given cumulative distance, return the surface category of the
+    // message segment that contains it (binary search on boundaries).
+    function categoryAt(d) {
+      let lo = 0, hi = boundaries.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (boundaries[mid].cumDist < d) lo = mid + 1; else hi = mid;
+      }
+      return boundaries[lo].category;
+    }
+
+    // Walk geometry coords, grouping runs of the same category.
+    // Each transition point is shared between the ending and starting segment
+    // so the line has no gaps.
+    const segments = [];
+    let curCat     = categoryAt(geomCum[0]);
+    let curPts     = [[coords[0][1], coords[0][0]]];
+
+    for (let i = 1; i < coords.length; i++) {
+      const cat = categoryAt(geomCum[i]);
+      if (cat === curCat) {
+        curPts.push([coords[i][1], coords[i][0]]);
+      } else {
+        // Share transition point for a seamless join
+        curPts.push([coords[i][1], coords[i][0]]);
+        segments.push({ latlngs: curPts, category: curCat });
+        curCat = cat;
+        curPts = [[coords[i][1], coords[i][0]]];
+      }
+    }
+    segments.push({ latlngs: curPts, category: curCat });
+    return segments;
   }
 
   function computeRouteStats(geojson) {
@@ -1501,22 +1604,34 @@
 
   // ── Route hover: map → profile hairline ──────────────────────────────────
   function onRouteMouseMove(e) {
-    if (!elevData || elevData.length < 2) return;
+    if (!routeGeom || routeGeom.length < 2) return;
     const { lat, lng } = e.latlng;
 
-    // Find the nearest elevData point by squared lat/lon distance
+    // Find nearest dense geometry point (1939 pts) — snaps marker to route
     let bestIdx = 0, bestDist = Infinity;
-    for (let i = 0; i < elevData.length; i++) {
-      const p = elevData[i];
-      if (p.lat == null || p.lon == null) continue;
+    for (let i = 0; i < routeGeom.length; i++) {
+      const p = routeGeom[i];
       const d = (p.lat - lat) ** 2 + (p.lon - lng) ** 2;
       if (d < bestDist) { bestDist = d; bestIdx = i; }
     }
-    showElevHover(elevData[bestIdx].cumDist);
+    const best = routeGeom[bestIdx];
+    showElevHover(best.cumDist);
+
+    // Orange marker snapped to nearest route point (same style as profile hover)
+    if (!hoverMarker) {
+      hoverMarker = L.circleMarker([best.lat, best.lon], {
+        radius: 6, color: 'white', weight: 2,
+        fillColor: '#f59e0b', fillOpacity: 1,
+        interactive: false,
+      }).addTo(map);
+    } else {
+      hoverMarker.setLatLng([best.lat, best.lon]);
+    }
   }
 
   function onRouteMouseOut() {
     hideElevHover();
+    if (hoverMarker) { map.removeLayer(hoverMarker); hoverMarker = null; }
   }
 
   // ── Mode toggle ───────────────────────────────────────────────────────────
