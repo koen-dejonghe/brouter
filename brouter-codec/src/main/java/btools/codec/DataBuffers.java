@@ -16,6 +16,9 @@ public final class DataBuffers {
   public int[] alon = new int[2048];
   public int[] alat = new int[2048];
 
+  // set by NodesCache to supply cached raw bytes for cross-segment re-decode
+  public byte[] cachedBytes = null;
+
   public DataBuffers() {
     this(new byte[65636]);
   }

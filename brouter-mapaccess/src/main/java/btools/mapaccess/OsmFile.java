@@ -117,15 +117,22 @@ final public class OsmFile {
                                      WaypointMatcher waypointMatcher, boolean reallyDecode, OsmNodesMap hollowNodes) throws IOException {
     int subIdx = (latIdx - divisor * latDegree) * divisor + (lonIdx - divisor * lonDegree);
 
-    byte[] ab = dataBuffers.iobuffer;
-    int asize = getDataInputForSubIdx(subIdx, ab);
-
-    if (asize == 0) {
-      return MicroCache.emptyCache();
-    }
-    if (asize > ab.length) {
-      ab = new byte[asize];
+    byte[] ab;
+    int asize;
+    if (dataBuffers.cachedBytes != null) {
+      ab = dataBuffers.cachedBytes;
+      asize = ab.length;
+    } else {
+      ab = dataBuffers.iobuffer;
       asize = getDataInputForSubIdx(subIdx, ab);
+
+      if (asize == 0) {
+        return MicroCache.emptyCache();
+      }
+      if (asize > ab.length) {
+        ab = new byte[asize];
+        asize = getDataInputForSubIdx(subIdx, ab);
+      }
     }
 
     StatCoderContext bc = new StatCoderContext(ab);
@@ -138,7 +145,18 @@ final public class OsmFile {
         return new MicroCache2(bc, dataBuffers, lonIdx, latIdx, divisor, wayValidator, waypointMatcher);
       }
       new DirectWeaver(bc, dataBuffers, lonIdx, latIdx, divisor, wayValidator, waypointMatcher, hollowNodes);
-      return MicroCache.emptyNonVirgin;
+      // Preserve raw bytes so the ghost mechanism can avoid disk I/O on the next segment
+      if (dataBuffers.cachedBytes == null) {
+        // only copy on first decode; on re-decode cachedBytes is already the right array
+        MicroCache cached = MicroCache.emptyCache();
+        cached.rawBytes = new byte[asize];
+        System.arraycopy(ab, 0, cached.rawBytes, 0, asize);
+        return cached;
+      }
+      // re-decode from cached bytes: return a fresh cache with the same raw bytes
+      MicroCache cached = MicroCache.emptyCache();
+      cached.rawBytes = dataBuffers.cachedBytes;
+      return cached;
     } finally {
       // crc check only if the buffer has not been fully read
       int readBytes = (bc.getReadingBitPosition() + 7) >> 3;

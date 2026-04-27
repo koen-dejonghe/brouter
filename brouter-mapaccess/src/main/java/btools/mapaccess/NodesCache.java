@@ -190,8 +190,20 @@ public final class NodesCache {
 
         cacheSum += segment.getDataSize();
       } else if (segment.ghost) {
-        segment.unGhost();
-        ghostWakeup += segment.getDataSize();
+        if (segment.rawBytes != null) {
+          // Ghost from a prior segment carrying cached raw bytes: re-decode into the
+          // new nodesMap without any disk I/O, then re-store a fresh virgin cache.
+          cacheSum -= segment.getDataSize(); // remove old ghost accounting (added by setGhostState)
+          checkEnableCacheCleaning();
+          dataBuffers.cachedBytes = segment.rawBytes; // supply bytes to createMicroCache
+          segment = osmf.createMicroCache(ilon, ilat, dataBuffers, expCtxWay, waypointMatcher, nodesMap);
+          dataBuffers.cachedBytes = null;
+          cacheSum += segment.getDataSize();
+          ghostWakeup += segment.getDataSize();
+        } else {
+          segment.unGhost();
+          ghostWakeup += segment.getDataSize();
+        }
       }
       return segment;
     } catch (IOException re) {

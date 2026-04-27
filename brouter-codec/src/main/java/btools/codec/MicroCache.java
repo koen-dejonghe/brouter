@@ -32,6 +32,9 @@ public class MicroCache extends ByteDataWriter {
   public boolean virgin = true;
   public boolean ghost = false;
 
+  // raw tile bytes preserved for cross-segment re-decode (directWeaving mode)
+  public byte[] rawBytes = null;
+
   public static boolean debug = false;
 
   protected MicroCache(byte[] ab) {
@@ -72,6 +75,7 @@ public class MicroCache extends ByteDataWriter {
   }
 
   public final int getDataSize() {
+    if (rawBytes != null) return rawBytes.length;
     return ab == null ? 0 : ab.length;
   }
 
