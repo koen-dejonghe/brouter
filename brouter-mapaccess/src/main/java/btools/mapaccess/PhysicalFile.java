@@ -6,8 +6,11 @@
 package btools.mapaccess;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.RandomAccessFile;
+import java.nio.MappedByteBuffer;
+import java.nio.channels.FileChannel;
 
 import btools.codec.DataBuffers;
 import btools.codec.MicroCache;
@@ -15,7 +18,8 @@ import btools.util.ByteDataReader;
 import btools.util.Crc32;
 
 final public class PhysicalFile {
-  RandomAccessFile ra = null;
+  FileChannel channel = null;
+  MappedByteBuffer mappedBuffer = null;
   long[] fileIndex = new long[25];
   int[] fileHeaderCrcs;
 
@@ -82,7 +86,7 @@ final public class PhysicalFile {
     } finally {
       if (pf != null)
         try {
-          pf.ra.close();
+          pf.close();
         } catch (Exception ee) {
         }
     }
@@ -92,8 +96,9 @@ final public class PhysicalFile {
   public PhysicalFile(File f, DataBuffers dataBuffers, int lookupVersion, int lookupMinorVersion) throws IOException {
     fileName = f.getName();
     byte[] iobuffer = dataBuffers.iobuffer;
-    ra = new RandomAccessFile(f, "r");
-    ra.readFully(iobuffer, 0, 200);
+    channel = new FileInputStream(f).getChannel();
+    mappedBuffer = channel.map(FileChannel.MapMode.READ_ONLY, 0, channel.size());
+    ((java.nio.ByteBuffer) mappedBuffer.duplicate().position(0)).get(iobuffer, 0, 200);
     int fileIndexCrc = Crc32.crc(iobuffer, 0, 200);
     ByteDataReader dis = new ByteDataReader(iobuffer);
     for (int i = 0; i < 25; i++) {
@@ -107,7 +112,7 @@ final public class PhysicalFile {
     }
 
     // read some extra info from the end of the file, if present
-    long len = ra.length();
+    long len = channel.size();
 
     long pos = fileIndex[24];
     int extraLen = 8 + 26 * 4;
@@ -122,8 +127,7 @@ final public class PhysicalFile {
       throw new IOException("file of size " + len + " too short, should be " + (pos + extraLen));
     }
 
-    ra.seek(pos);
-    ra.readFully(iobuffer, 0, extraLen);
+    ((java.nio.ByteBuffer) mappedBuffer.duplicate().position((int) pos)).get(iobuffer, 0, extraLen);
     dis = new ByteDataReader(iobuffer);
     creationTime = dis.readLong();
 
@@ -144,12 +148,14 @@ final public class PhysicalFile {
     } catch (Exception e) {}
   }
 
-  public void close(){
-    if (ra != null) {
+  public void close() {
+    if (channel != null) {
       try {
-        ra.close();
+        channel.close();
       } catch (Exception ee) {
       }
+      channel = null;
+      mappedBuffer = null;
     }
   }
 

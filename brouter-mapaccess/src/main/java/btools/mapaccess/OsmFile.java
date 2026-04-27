@@ -6,7 +6,7 @@
 package btools.mapaccess;
 
 import java.io.IOException;
-import java.io.RandomAccessFile;
+import java.nio.MappedByteBuffer;
 
 import btools.codec.DataBuffers;
 import btools.codec.MicroCache;
@@ -18,7 +18,7 @@ import btools.util.ByteDataReader;
 import btools.util.Crc32;
 
 final public class OsmFile {
-  private RandomAccessFile is = null;
+  private MappedByteBuffer mappedBuffer = null;
   private long fileOffset;
 
   private int[] posIdx;
@@ -57,11 +57,10 @@ final public class OsmFile {
       if (fileOffset == index[tileIndex])
         return; // empty
 
-      is = rafile.ra;
+      mappedBuffer = rafile.mappedBuffer;
       posIdx = new int[ncaches];
       microCaches = new MicroCache[ncaches];
-      is.seek(fileOffset);
-      is.readFully(iobuffer, 0, indexsize);
+      ((java.nio.ByteBuffer) mappedBuffer.duplicate().position((int) fileOffset)).get(iobuffer, 0, indexsize);
 
       if (rafile.fileHeaderCrcs != null) {
         int headerCrc = Crc32.crc(iobuffer, 0, indexsize);
@@ -107,9 +106,8 @@ final public class OsmFile {
     int endPos = getPosIdx(subIdx);
     int size = endPos - startPos;
     if (size > 0) {
-      is.seek(fileOffset + startPos);
       if (size <= iobuffer.length) {
-        is.readFully(iobuffer, 0, size);
+        ((java.nio.ByteBuffer) mappedBuffer.duplicate().position((int)(fileOffset + startPos))).get(iobuffer, 0, size);
       }
     }
     return size;

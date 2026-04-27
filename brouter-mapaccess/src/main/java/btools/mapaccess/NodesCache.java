@@ -393,8 +393,8 @@ public final class NodesCache {
     for (PhysicalFile f : fileCache.values()) {
       try {
         if (f != null)
-          f.ra.close();
-      } catch (IOException ioe) {
+          f.close();
+      } catch (Exception ioe) {
         // ignore
       }
     }
