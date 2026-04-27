@@ -488,6 +488,7 @@
   let undoStack    = [];   // array of [{lat,lon}[]] snapshots (max 50)
   let addingMode   = false;
   let routeLayer   = null;
+  let routeHitLayer = null; // transparent wide polyline for easier hover
   let profileParams = [];
   let elevData     = null;
   let elevMode     = 'gradient'; // 'gradient' | 'surface'
@@ -625,7 +626,8 @@
     waypoints.forEach(w => map.removeLayer(w.marker));
     waypoints = [];
     renderWaypointList();
-    if (routeLayer) { map.removeLayer(routeLayer); routeLayer = null; }
+    if (routeLayer)    { map.removeLayer(routeLayer);    routeLayer    = null; }
+    if (routeHitLayer) { map.removeLayer(routeHitLayer); routeHitLayer = null; }
     document.getElementById('btn-download').disabled = true;
     document.getElementById('stats').style.display = 'none';
     setStatus('', '');
@@ -955,7 +957,8 @@
   function scheduleRoute() {
     if (routeTimer) { clearTimeout(routeTimer); routeTimer = null; }
     if (waypoints.length < 2) {
-      if (routeLayer) { map.removeLayer(routeLayer); routeLayer = null; }
+      if (routeLayer)    { map.removeLayer(routeLayer);    routeLayer    = null; }
+      if (routeHitLayer) { map.removeLayer(routeHitLayer); routeHitLayer = null; }
       document.getElementById('btn-download').disabled = true;
       document.getElementById('stats').style.display = 'none';
       clearElevationProfile();
@@ -968,7 +971,8 @@
     const lonlats  = currentLonlats();
     const wasEmpty = !routeLayer;
     setStatus('Calculating…', 'info');
-    if (routeLayer) { map.removeLayer(routeLayer); routeLayer = null; }
+    if (routeLayer)    { map.removeLayer(routeLayer);    routeLayer    = null; }
+    if (routeHitLayer) { map.removeLayer(routeHitLayer); routeHitLayer = null; }
 
     try {
       const qs   = buildRouteParams(lonlats, null);
@@ -982,7 +986,19 @@
 
       routeLayer = L.geoJSON(data, {
         style: { color: '#2563eb', weight: 4, opacity: 0.85 },
+        interactive: false,   // hit-detection handled by routeHitLayer
       }).addTo(map);
+
+      // Wide transparent polyline for comfortable hover hit-area
+      const geomCoords = data.features?.[0]?.geometry?.coordinates;
+      if (geomCoords) {
+        routeHitLayer = L.polyline(
+          geomCoords.map(c => [c[1], c[0]]),
+          { weight: 20, opacity: 0, interactive: true }
+        ).addTo(map);
+        routeHitLayer.on('mousemove', onRouteMouseMove);
+        routeHitLayer.on('mouseout',  onRouteMouseOut);
+      }
 
       // Only fit bounds when showing a new route (not on every update)
       if (wasEmpty) map.fitBounds(routeLayer.getBounds(), { padding: [30, 30] });
@@ -1388,42 +1404,63 @@
     map.invalidateSize();
   }
 
-  // ── Hover interaction ─────────────────────────────────────────────────────
+  // ── Shared elevation-hover helpers ───────────────────────────────────────
   const svgEl     = document.getElementById('elev-svg');
   const hairline  = document.getElementById('elev-hairline');
   const tooltip   = document.getElementById('elev-tooltip');
 
-  svgEl.addEventListener('mousemove', e => {
-    if (!elevData || elevData.length < 2) return;
-    const rect   = svgEl.getBoundingClientRect();
-    const mouseX = e.clientX - rect.left;
+  /** Show the hairline + tooltip on the profile at cumulative distance `dist` (metres). */
+  function showElevHover(dist) {
+    if (!elevData || elevData.length < 2 || !elevData._xOf) return;
+    const x = elevData._xOf(dist);
 
-    const { _totalDist } = elevData;
-    const dist = Math.max(0, Math.min(_totalDist,
-      (_totalDist * (mouseX - PAD_L)) / (rect.width - PAD_L - PAD_R)
-    ));
-
+    // Binary search for surrounding points
     let lo = 0, hi = elevData.length - 1;
     while (lo < hi - 1) {
       const mid = (lo + hi) >> 1;
       if (elevData[mid].cumDist < dist) lo = mid; else hi = mid;
     }
-
     const a = elevData[lo], b = elevData[hi];
-    const t = b.cumDist > a.cumDist ? (dist - a.cumDist) / (b.cumDist - a.cumDist) : 0;
+    const t    = b.cumDist > a.cumDist ? (dist - a.cumDist) / (b.cumDist - a.cumDist) : 0;
     const elev = a.elev + t * (b.elev - a.elev);
-    const lat  = a.lat != null ? a.lat + t * (b.lat - a.lat) : null;
-    const lon  = a.lon != null ? a.lon + t * (b.lon - a.lon) : null;
 
-    hairline.style.left    = mouseX + 'px';
+    hairline.style.left    = x + 'px';
     hairline.style.display = 'block';
 
     const km   = (dist / 1000).toFixed(2);
     tooltip.textContent = `${km} km · ${Math.round(elev)} m`;
+    const svgW = svgEl.getBoundingClientRect().width;
     const tipW = 100;
-    const flip = mouseX + tipW + 14 > rect.width;
-    tooltip.style.left    = flip ? (mouseX - tipW - 6) + 'px' : (mouseX + 10) + 'px';
+    tooltip.style.left    = (x + tipW + 14 > svgW) ? (x - tipW - 6) + 'px' : (x + 10) + 'px';
     tooltip.style.display = 'block';
+  }
+
+  function hideElevHover() {
+    hairline.style.display = 'none';
+    tooltip.style.display  = 'none';
+  }
+
+  // ── SVG hover: profile → map marker ──────────────────────────────────────
+  svgEl.addEventListener('mousemove', e => {
+    if (!elevData || elevData.length < 2) return;
+    const rect   = svgEl.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+
+    const dist = Math.max(0, Math.min(elevData._totalDist,
+      (elevData._totalDist * (mouseX - PAD_L)) / (rect.width - PAD_L - PAD_R)
+    ));
+    showElevHover(dist);
+
+    // Interpolate lat/lon for map marker
+    let lo = 0, hi = elevData.length - 1;
+    while (lo < hi - 1) {
+      const mid = (lo + hi) >> 1;
+      if (elevData[mid].cumDist < dist) lo = mid; else hi = mid;
+    }
+    const a = elevData[lo], b = elevData[hi];
+    const t   = b.cumDist > a.cumDist ? (dist - a.cumDist) / (b.cumDist - a.cumDist) : 0;
+    const lat = a.lat != null ? a.lat + t * (b.lat - a.lat) : null;
+    const lon = a.lon != null ? a.lon + t * (b.lon - a.lon) : null;
 
     if (lat != null && lon != null) {
       if (!hoverMarker) {
@@ -1438,10 +1475,29 @@
   });
 
   svgEl.addEventListener('mouseleave', () => {
-    hairline.style.display = 'none';
-    tooltip.style.display  = 'none';
+    hideElevHover();
     if (hoverMarker) { map.removeLayer(hoverMarker); hoverMarker = null; }
   });
+
+  // ── Route hover: map → profile hairline ──────────────────────────────────
+  function onRouteMouseMove(e) {
+    if (!elevData || elevData.length < 2) return;
+    const { lat, lng } = e.latlng;
+
+    // Find the nearest elevData point by squared lat/lon distance
+    let bestIdx = 0, bestDist = Infinity;
+    for (let i = 0; i < elevData.length; i++) {
+      const p = elevData[i];
+      if (p.lat == null || p.lon == null) continue;
+      const d = (p.lat - lat) ** 2 + (p.lon - lng) ** 2;
+      if (d < bestDist) { bestDist = d; bestIdx = i; }
+    }
+    showElevHover(elevData[bestIdx].cumDist);
+  }
+
+  function onRouteMouseOut() {
+    hideElevHover();
+  }
 
   // ── Mode toggle ───────────────────────────────────────────────────────────
   document.getElementById('btn-mode-gradient').addEventListener('click', () => {
