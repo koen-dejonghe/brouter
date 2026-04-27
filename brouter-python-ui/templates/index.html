@@ -1,0 +1,1186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BRouter UI</title>
+
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, sans-serif;
+      display: flex;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* ── Sidebar ─────────────────────────────────────────────────────── */
+    #sidebar {
+      width: 420px;
+      min-width: 320px;
+      flex-shrink: 0;
+      background: #f8f9fa;
+      border-right: 1px solid #ddd;
+      display: flex;
+      flex-direction: column;
+      padding: 16px;
+      gap: 12px;
+      overflow-y: auto;
+    }
+
+    h1 { font-size: 1.2rem; color: #333; }
+
+    label {
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: #555;
+      display: block;
+      margin-bottom: 3px;
+    }
+
+    input[type="text"],
+    input[type="number"],
+    select {
+      width: 100%;
+      min-width: 0;
+      padding: 6px 8px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-size: 0.85rem;
+    }
+
+    .field { display: flex; flex-direction: column; }
+    .hint { font-size: 0.72rem; color: #888; margin-top: 2px; }
+
+    .marker-row { display: flex; gap: 6px; align-items: flex-end; }
+    .marker-row .field { flex: 1; }
+    .marker-row button { padding: 6px 8px; white-space: nowrap; font-size: 0.78rem; }
+
+    button {
+      padding: 8px 12px;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.85rem;
+    }
+
+    #btn-route    { background: #2563eb; color: white; font-weight: 600; }
+    #btn-route:hover    { background: #1d4ed8; }
+    #btn-route:disabled { background: #93c5fd; cursor: not-allowed; }
+
+    #btn-download    { background: #16a34a; color: white; font-weight: 600; }
+    #btn-download:hover    { background: #15803d; }
+    #btn-download:disabled { background: #86efac; cursor: not-allowed; }
+
+    #btn-locate { background: #e5e7eb; color: #374151; }
+    #btn-locate:hover { background: #d1d5db; }
+
+    #btn-clear { background: #e5e7eb; color: #374151; }
+    #btn-clear:hover { background: #d1d5db; }
+
+    .status {
+      font-size: 0.8rem;
+      padding: 6px 8px;
+      border-radius: 4px;
+      display: none;
+    }
+    .status.error { background: #fee2e2; color: #b91c1c; display: block; }
+    .status.info  { background: #dbeafe; color: #1e40af; display: block; }
+    .status.ok    { background: #dcfce7; color: #15803d; display: block; }
+
+    /* ── Profile settings panel ──────────────────────────────────────── */
+    #profile-settings {
+      border: 1px solid #ddd;
+      border-radius: 6px;
+    }
+
+    #profile-settings summary {
+      padding: 7px 10px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: #374151;
+      cursor: pointer;
+      background: #f1f5f9;
+      user-select: none;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    #profile-settings summary:hover { background: #e2e8f0; }
+
+    #profile-settings-body {
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .param-row { display: flex; flex-direction: column; gap: 2px; }
+    .param-row label { font-size: 0.75rem; font-weight: 600; color: #374151; margin: 0; }
+    .param-desc { font-size: 0.7rem; color: #6b7280; }
+    .param-row input[type="number"], .param-row select { font-size: 0.82rem; padding: 4px 6px; }
+
+    .bool-row { flex-direction: row; align-items: center; gap: 8px; }
+    .bool-row label { font-size: 0.8rem; font-weight: 600; color: #374151; flex: 1; }
+    .bool-row input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; }
+
+    .param-changed label { color: #2563eb; }
+
+    #btn-reset-params {
+      font-size: 0.75rem; padding: 4px 8px;
+      background: #f1f5f9; color: #374151; border: 1px solid #cbd5e1;
+    }
+    #btn-reset-params:hover { background: #e2e8f0; }
+
+    #params-loading { font-size: 0.78rem; color: #6b7280; padding: 6px 0; text-align: center; }
+
+    /* ── Legend (start/end) ──────────────────────────────────────────── */
+    .legend { font-size: 0.75rem; color: #666; border-top: 1px solid #ddd; padding-top: 8px; }
+    .legend span {
+      display: inline-block; width: 12px; height: 12px;
+      border-radius: 50%; margin-right: 4px; vertical-align: middle;
+    }
+    .dot-start { background: #16a34a; }
+    .dot-end   { background: #dc2626; }
+
+    /* ── Map column ──────────────────────────────────────────────────── */
+    #map-column {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    #map { flex: 1; min-height: 0; }
+
+    .picking-cursor { cursor: crosshair !important; }
+
+    /* ── Elevation profile panel ─────────────────────────────────────── */
+    #profile-panel {
+      flex-shrink: 0;
+      background: #1e293b;
+      border-top: 1px solid #334155;
+      display: flex;
+      flex-direction: column;
+    }
+
+    #profile-panel-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 5px 12px;
+      background: #0f172a;
+      user-select: none;
+    }
+
+    #profile-panel-title {
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: #94a3b8;
+      flex: 1;
+    }
+
+    .mode-btn {
+      font-size: 0.72rem;
+      padding: 2px 10px;
+      border-radius: 3px;
+      border: 1px solid #475569;
+      background: transparent;
+      color: #94a3b8;
+      cursor: pointer;
+    }
+    .mode-btn.active {
+      background: #2563eb;
+      border-color: #2563eb;
+      color: white;
+    }
+    .mode-btn:hover:not(.active) { background: #1e293b; }
+
+    #btn-toggle-panel {
+      font-size: 0.72rem;
+      padding: 2px 8px;
+      background: transparent;
+      border: 1px solid #475569;
+      color: #94a3b8;
+      border-radius: 3px;
+    }
+    #btn-toggle-panel:hover { background: #1e293b; }
+
+    #profile-panel-body {
+      position: relative;
+      height: 130px;
+    }
+    #profile-panel.collapsed #profile-panel-body { display: none; }
+
+    #elev-svg {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    /* Hairline + tooltip */
+    #elev-hairline {
+      position: absolute;
+      top: 0; bottom: 0;
+      width: 1px;
+      background: rgba(255,255,255,0.5);
+      pointer-events: none;
+      display: none;
+    }
+    #elev-tooltip {
+      position: absolute;
+      top: 6px;
+      background: rgba(15,23,42,0.85);
+      color: #e2e8f0;
+      font-size: 0.72rem;
+      padding: 3px 7px;
+      border-radius: 3px;
+      pointer-events: none;
+      display: none;
+      white-space: nowrap;
+    }
+
+    /* Surface legend */
+    #surface-legend {
+      display: none;
+      flex-wrap: wrap;
+      gap: 6px 14px;
+      padding: 4px 12px 6px;
+      background: #0f172a;
+    }
+    #surface-legend.visible { display: flex; }
+    .surf-item { display: flex; align-items: center; gap: 4px; font-size: 0.68rem; color: #94a3b8; }
+    .surf-swatch { width: 14px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+  </style>
+</head>
+<body>
+
+<div id="sidebar">
+  <h1>BRouter UI</h1>
+
+  <!-- Start -->
+  <div class="field">
+    <label>Start (lon, lat)</label>
+    <div class="marker-row">
+      <div class="field"><input type="text" id="start-lon" placeholder="e.g. 8.799" /></div>
+      <div class="field"><input type="text" id="start-lat" placeholder="e.g. 49.565" /></div>
+      <button id="btn-pick-start" title="Click on the map to set start">Pick</button>
+    </div>
+  </div>
+
+  <!-- End -->
+  <div class="field">
+    <label>End (lon, lat)</label>
+    <div class="marker-row">
+      <div class="field"><input type="text" id="end-lon" placeholder="e.g. 8.811" /></div>
+      <div class="field"><input type="text" id="end-lat" placeholder="e.g. 49.563" /></div>
+      <button id="btn-pick-end" title="Click on the map to set end">Pick</button>
+    </div>
+    <p class="hint">Or click "Pick" then click on the map.</p>
+  </div>
+
+  <!-- Profile -->
+  <div class="field">
+    <label>Profile</label>
+    <select id="profile">
+      {% for p in profiles %}
+      <option value="{{ p }}" {% if p == 'trekking' %}selected{% endif %}>{{ p }}</option>
+      {% endfor %}
+    </select>
+  </div>
+
+  <!-- Profile settings (collapsible, dynamic) -->
+  <details id="profile-settings">
+    <summary>
+      Profile settings
+      <span id="changed-badge" style="display:none; font-size:0.7rem; background:#2563eb; color:white; border-radius:10px; padding:1px 7px;">changed</span>
+    </summary>
+    <div id="profile-settings-body">
+      <div id="params-loading">Loading…</div>
+    </div>
+    <div style="padding: 4px 10px 10px;">
+      <button id="btn-reset-params">Reset to defaults</button>
+    </div>
+  </details>
+
+  <!-- Alternative -->
+  <div class="field">
+    <label>Alternative route</label>
+    <select id="alternativeidx">
+      <option value="0">0 — primary</option>
+      <option value="1">1</option>
+      <option value="2">2</option>
+      <option value="3">3</option>
+    </select>
+  </div>
+
+  <!-- Output format -->
+  <div class="field">
+    <label>Download format</label>
+    <select id="format">
+      <option value="gpx">GPX</option>
+      <option value="geojson">GeoJSON</option>
+      <option value="kml">KML</option>
+      <option value="csv">CSV</option>
+    </select>
+  </div>
+
+  <!-- Track name -->
+  <div class="field">
+    <label>Track name</label>
+    <input type="text" id="trackname" value="brouter" />
+  </div>
+
+  <!-- Actions -->
+  <button id="btn-route">Calculate Route</button>
+  <button id="btn-download" disabled>Download Route</button>
+  <button id="btn-locate">My location</button>
+  <button id="btn-clear">Clear</button>
+
+  <div id="status" class="status"></div>
+
+  <!-- Stats -->
+  <div id="stats" style="display:none; font-size:0.8rem; color:#374151;">
+    <strong>Route info</strong>
+    <div id="stats-body"></div>
+  </div>
+
+  <div class="legend">
+    <span class="dot-start"></span> Start &nbsp;
+    <span class="dot-end"></span> End
+  </div>
+</div>
+
+<!-- Map column: map + elevation panel -->
+<div id="map-column">
+  <div id="map"></div>
+
+  <div id="profile-panel" class="collapsed">
+    <!-- Header -->
+    <div id="profile-panel-header">
+      <span id="profile-panel-title">Elevation profile</span>
+      <button class="mode-btn active" id="btn-mode-gradient" title="Colour by slope gradient">Gradient</button>
+      <button class="mode-btn"        id="btn-mode-surface"  title="Colour by road surface">Surface</button>
+      <button id="btn-toggle-panel">▲ Show</button>
+    </div>
+    <!-- Chart -->
+    <div id="profile-panel-body">
+      <svg id="elev-svg" preserveAspectRatio="none"></svg>
+      <div id="elev-hairline"></div>
+      <div id="elev-tooltip"></div>
+    </div>
+    <!-- Surface legend (shown only in surface mode) -->
+    <div id="surface-legend"></div>
+  </div>
+</div>
+
+<script>
+  // ── Map setup ──────────────────────────────────────────────────────────────
+  const map = L.map('map').setView([49.5, 8.8], 12);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    maxZoom: 19,
+  }).addTo(map);
+
+  // Centre on current location at startup
+  map.locate({ setView: true, maxZoom: 13 });
+  map.on('locationerror', () => { /* keep default view on error */ });
+
+  // ── State ──────────────────────────────────────────────────────────────────
+  let startMarker  = null, endMarker = null, routeLayer = null;
+  let pickingMode  = null;
+  let lastLonlats  = null;
+  let profileParams = [];
+  let elevData     = null;   // parsed elevation data for current route
+  let elevMode     = 'gradient'; // 'gradient' | 'surface'
+  let hoverMarker  = null;   // L.circleMarker that follows hover on chart
+
+  function makeIcon(color) {
+    return L.divIcon({
+      className: '',
+      html: `<div style="width:14px;height:14px;border-radius:50%;background:${color};border:2px solid white;box-shadow:0 1px 3px rgba(0,0,0,.4)"></div>`,
+      iconSize: [14, 14], iconAnchor: [7, 7],
+    });
+  }
+
+  // ── Coordinate helpers ─────────────────────────────────────────────────────
+  function setStart(lon, lat) {
+    document.getElementById('start-lon').value = lon.toFixed(6);
+    document.getElementById('start-lat').value = lat.toFixed(6);
+    if (startMarker) map.removeLayer(startMarker);
+    startMarker = L.marker([lat, lon], { icon: makeIcon('#16a34a'), draggable: true })
+      .addTo(map).bindTooltip('Start');
+    startMarker.on('dragend', e => {
+      const ll = e.target.getLatLng();
+      document.getElementById('start-lon').value = ll.lng.toFixed(6);
+      document.getElementById('start-lat').value = ll.lat.toFixed(6);
+    });
+  }
+
+  function setEnd(lon, lat) {
+    document.getElementById('end-lon').value = lon.toFixed(6);
+    document.getElementById('end-lat').value = lat.toFixed(6);
+    if (endMarker) map.removeLayer(endMarker);
+    endMarker = L.marker([lat, lon], { icon: makeIcon('#dc2626'), draggable: true })
+      .addTo(map).bindTooltip('End');
+    endMarker.on('dragend', e => {
+      const ll = e.target.getLatLng();
+      document.getElementById('end-lon').value = ll.lng.toFixed(6);
+      document.getElementById('end-lat').value = ll.lat.toFixed(6);
+    });
+  }
+
+  // ── Map click ─────────────────────────────────────────────────────────────
+  map.on('click', e => {
+    if (!pickingMode) return;
+    const { lng, lat } = e.latlng;
+    if (pickingMode === 'start') setStart(lng, lat);
+    else setEnd(lng, lat);
+    pickingMode = null;
+    map.getContainer().classList.remove('picking-cursor');
+    setStatus('', '');
+  });
+
+  document.getElementById('btn-pick-start').addEventListener('click', () => {
+    pickingMode = 'start';
+    map.getContainer().classList.add('picking-cursor');
+    setStatus('Click on the map to set the start point.', 'info');
+  });
+  document.getElementById('btn-pick-end').addEventListener('click', () => {
+    pickingMode = 'end';
+    map.getContainer().classList.add('picking-cursor');
+    setStatus('Click on the map to set the end point.', 'info');
+  });
+
+  // ── Status ─────────────────────────────────────────────────────────────────
+  function setStatus(msg, type) {
+    const el = document.getElementById('status');
+    el.textContent = msg;
+    el.className = 'status' + (type ? ' ' + type : '');
+  }
+
+  // ── Profile params / localStorage ─────────────────────────────────────────
+  function storageKey(profile) { return `brouter-params:${profile}`; }
+
+  function saveProfileOverrides(profile) {
+    const saved = {};
+    document.querySelectorAll('[data-param]').forEach(input => {
+      if (isChanged(input))
+        saved[input.dataset.param] = input.type === 'checkbox' ? input.checked : input.value;
+    });
+    if (Object.keys(saved).length)
+      localStorage.setItem(storageKey(profile), JSON.stringify(saved));
+    else
+      localStorage.removeItem(storageKey(profile));
+  }
+
+  function loadedOverrides(profile) {
+    try { return JSON.parse(localStorage.getItem(storageKey(profile))) || {}; }
+    catch { return {}; }
+  }
+
+  async function loadProfileParams(profile) {
+    const body = document.getElementById('profile-settings-body');
+    body.innerHTML = '<div id="params-loading">Loading…</div>';
+    updateChangedBadge();
+    try {
+      const resp = await fetch(`/profile-params/${encodeURIComponent(profile)}`);
+      profileParams = await resp.json();
+    } catch {
+      body.innerHTML = '<div id="params-loading" style="color:#b91c1c">Failed to load params.</div>';
+      return;
+    }
+    renderProfileParams(profile);
+  }
+
+  function renderProfileParams(profile) {
+    const body = document.getElementById('profile-settings-body');
+    if (!profileParams.length) {
+      body.innerHTML = '<div id="params-loading">No configurable parameters.</div>';
+      return;
+    }
+    const saved = loadedOverrides(profile);
+    body.innerHTML = '';
+    for (const p of profileParams) {
+      const row = document.createElement('div');
+      const savedVal = saved[p.name];
+      if (p.kind === 'boolean') {
+        const checked = savedVal !== undefined ? savedVal : p.default;
+        row.className = 'param-row bool-row';
+        row.innerHTML = `
+          <label for="param-${p.name}" title="${p.description}">${p.name}</label>
+          <input type="checkbox" id="param-${p.name}" data-param="${p.name}" data-default="${p.default}"
+            ${checked ? 'checked' : ''} />`;
+      } else if (p.kind === 'number') {
+        const val = savedVal !== undefined ? savedVal : p.default;
+        row.className = 'param-row';
+        row.innerHTML = `
+          <label for="param-${p.name}">${p.name}</label>
+          <div class="param-desc">${p.description}</div>
+          <input type="number" id="param-${p.name}" data-param="${p.name}" data-default="${p.default}"
+            value="${val}" step="any" />`;
+      } else if (p.kind === 'enum') {
+        const val = savedVal !== undefined ? savedVal : p.default;
+        const opts = p.options.map(o =>
+          `<option value="${o.value}" ${String(o.value) === String(val) ? 'selected' : ''}>${o.value} — ${o.label}</option>`
+        ).join('');
+        row.className = 'param-row';
+        row.innerHTML = `
+          <label for="param-${p.name}">${p.name}</label>
+          <div class="param-desc">${p.description}</div>
+          <select id="param-${p.name}" data-param="${p.name}" data-default="${p.default}">${opts}</select>`;
+      } else {
+        const val = savedVal !== undefined ? savedVal : p.default;
+        row.className = 'param-row';
+        row.innerHTML = `
+          <label for="param-${p.name}">${p.name}</label>
+          <input type="text" id="param-${p.name}" data-param="${p.name}" data-default="${p.default}"
+            value="${val}" />`;
+      }
+      body.appendChild(row);
+      const input = row.querySelector('[data-param]');
+      if (isChanged(input)) row.classList.add('param-changed');
+      input.addEventListener('change', () => {
+        row.classList.toggle('param-changed', isChanged(input));
+        saveProfileOverrides(profile);
+        updateChangedBadge();
+      });
+    }
+    updateChangedBadge();
+  }
+
+  function isChanged(input) {
+    if (input.type === 'checkbox') return input.checked !== (input.dataset.default === 'true');
+    return String(input.value) !== String(input.dataset.default);
+  }
+
+  function updateChangedBadge() {
+    document.getElementById('changed-badge').style.display =
+      getProfileOverrides().length > 0 ? 'inline' : 'none';
+  }
+
+  function getProfileOverrides() {
+    const overrides = [];
+    document.querySelectorAll('[data-param]').forEach(input => {
+      if (!isChanged(input)) return;
+      const value = input.type === 'checkbox' ? (input.checked ? '1' : '0') : input.value;
+      overrides.push([`profile:${input.dataset.param}`, value]);
+    });
+    return overrides;
+  }
+
+  document.getElementById('btn-reset-params').addEventListener('click', () => {
+    const profile = document.getElementById('profile').value;
+    document.querySelectorAll('[data-param]').forEach(input => {
+      if (input.type === 'checkbox') input.checked = input.dataset.default === 'true';
+      else input.value = input.dataset.default;
+      input.closest('.param-row').classList.remove('param-changed');
+    });
+    localStorage.removeItem(storageKey(profile));
+    updateChangedBadge();
+  });
+
+  loadProfileParams(document.getElementById('profile').value);
+  document.getElementById('profile').addEventListener('change', e => loadProfileParams(e.target.value));
+
+  // ── Build route query params ───────────────────────────────────────────────
+  function buildRouteParams(lonlats, fmt) {
+    const params = new URLSearchParams({
+      lonlats,
+      profile: document.getElementById('profile').value,
+      alternativeidx: document.getElementById('alternativeidx').value,
+    });
+    if (fmt) params.set('format', fmt);
+    for (const [k, v] of getProfileOverrides()) params.append(k, v);
+    return params;
+  }
+
+  // ── Route calculation ─────────────────────────────────────────────────────
+  document.getElementById('btn-route').addEventListener('click', async () => {
+    const startLon = document.getElementById('start-lon').value.trim();
+    const startLat = document.getElementById('start-lat').value.trim();
+    const endLon   = document.getElementById('end-lon').value.trim();
+    const endLat   = document.getElementById('end-lat').value.trim();
+
+    if (!startLon || !startLat || !endLon || !endLat) {
+      setStatus('Please set both start and end points.', 'error'); return;
+    }
+
+    const lonlats = `${startLon},${startLat}|${endLon},${endLat}`;
+    lastLonlats = lonlats;
+
+    const btn = document.getElementById('btn-route');
+    btn.disabled = true;
+    btn.textContent = 'Calculating…';
+    setStatus('Contacting BRouter…', 'info');
+    if (routeLayer) { map.removeLayer(routeLayer); routeLayer = null; }
+
+    try {
+      const qs = buildRouteParams(lonlats, null);
+      const resp = await fetch(`/route?${qs}`);
+      const data = await resp.json();
+
+      if (!resp.ok) {
+        setStatus(data.error || 'Routing failed.', 'error');
+        return;
+      }
+
+      routeLayer = L.geoJSON(data, {
+        style: { color: '#2563eb', weight: 4, opacity: 0.85 },
+      }).addTo(map);
+      map.fitBounds(routeLayer.getBounds(), { padding: [30, 30] });
+
+      showStats(data?.features?.[0]?.properties ?? {}, data);
+      setStatus('Route calculated successfully.', 'ok');
+      document.getElementById('btn-download').disabled = false;
+
+      drawElevationProfile(data);
+
+    } catch (err) {
+      setStatus('Network error: ' + err.message, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Calculate Route';
+    }
+  });
+
+  // ── Stats ─────────────────────────────────────────────────────────────────
+  // ── Route stats from messages ─────────────────────────────────────────────
+  const PAVED_SURFACES   = new Set(['asphalt','concrete','paved','paving_stones','sett','cobblestone','metal','wood']);
+  const UNPAVED_SURFACES = new Set(['gravel','fine_gravel','compacted','pebblestone','unpaved',
+                                    'dirt','ground','grass','mud','earth','grass_paver','sand']);
+  const PAVED_HIGHWAYS   = new Set(['motorway','trunk','primary','secondary','tertiary',
+                                    'residential','unclassified','service','living_street','road']);
+  const UNPAVED_HIGHWAYS = new Set(['track','bridleway']);
+
+  function surfaceCategory(tags) {
+    if (tags.surface) {
+      if (PAVED_SURFACES.has(tags.surface))   return 'paved';
+      if (UNPAVED_SURFACES.has(tags.surface)) return 'unpaved';
+    }
+    if (tags.tracktype && tags.tracktype !== 'grade1') return 'unpaved';
+    if (tags.tracktype === 'grade1')                   return 'paved';
+    if (tags.highway) {
+      if (PAVED_HIGHWAYS.has(tags.highway))   return 'paved';
+      if (UNPAVED_HIGHWAYS.has(tags.highway)) return 'unpaved';
+      if (tags.highway === 'cycleway' || tags.highway === 'path' || tags.highway === 'footway')
+        return 'paved'; // assume sealed unless surface tag says otherwise
+    }
+    return 'unknown';
+  }
+
+  function computeRouteStats(geojson) {
+    const msgs   = geojson?.features?.[0]?.properties?.messages;
+    const coords = geojson?.features?.[0]?.geometry?.coordinates;
+    if (!msgs || msgs.length < 2) return null;
+
+    const cols  = msgs[0];
+    const iDist = cols.indexOf('Distance');
+    const iWay  = cols.indexOf('WayTags');
+    if (iDist < 0) return null;
+
+    // ── Surface breakdown from messages (sparse, has WayTags) ────────────
+    let pavedM = 0, unpavedM = 0, unknownM = 0;
+    for (let r = 1; r < msgs.length; r++) {
+      const row  = msgs[r];
+      const dist = parseInt(row[iDist], 10) || 0;
+      const tags = iWay >= 0 ? parseTags(row[iWay]) : {};
+      const cat  = surfaceCategory(tags);
+      if      (cat === 'paved')   pavedM   += dist;
+      else if (cat === 'unpaved') unpavedM += dist;
+      else                        unknownM += dist;
+    }
+
+    // ── Elevation gain/loss + grade from geometry coords (dense, fractional elev) ──
+    let gainM = 0, lossM = 0;
+    let maxGrade = -Infinity, minGrade = Infinity;
+    if (coords && coords.length >= 2) {
+      // Pre-compute cumulative distance and segment lengths
+      const segDist = new Float64Array(coords.length); // segDist[i] = dist from i-1 to i
+      const cumDist  = new Float64Array(coords.length); // cumDist[i] = total dist from 0 to i
+      for (let i = 1; i < coords.length; i++) {
+        const [lon1, lat1] = coords[i - 1];
+        const [lon2, lat2] = coords[i];
+        const dLat = (lat2 - lat1) * 111320;
+        const dLon = (lon2 - lon1) * 111320 * Math.cos((lat1 + lat2) / 2 * Math.PI / 180);
+        segDist[i] = Math.sqrt(dLat * dLat + dLon * dLon);
+        cumDist[i] = cumDist[i - 1] + segDist[i];
+        // Gain/loss from every point pair (fine-grained is correct for accumulation)
+        const dElev = coords[i][2] - coords[i - 1][2];
+        if (dElev > 0) gainM += dElev;
+        else           lossM += Math.abs(dElev);
+      }
+
+      // Grade over a 100 m window: slide j forward until cumDist[j]-cumDist[i] >= 100 m
+      const WINDOW_M = 100;
+      let j = 0;
+      for (let i = 0; i < coords.length - 1; i++) {
+        if (j <= i) j = i + 1;
+        while (j < coords.length - 1 && cumDist[j] - cumDist[i] < WINDOW_M) j++;
+        const span = cumDist[j] - cumDist[i];
+        if (span < 1) continue;
+        const dElev = coords[j][2] - coords[i][2];
+        const grade = (dElev / span) * 100;
+        if (grade > maxGrade) maxGrade = grade;
+        if (grade < minGrade) minGrade = grade;
+      }
+    }
+
+    const totalM = pavedM + unpavedM + unknownM || 1;
+    return {
+      pavedM, unpavedM, unknownM, totalM,
+      gainM: Math.round(gainM),
+      lossM: Math.round(lossM),
+      maxGrade: isFinite(maxGrade) ? maxGrade : null,
+      minGrade: isFinite(minGrade) ? minGrade : null,
+    };
+  }
+
+  function showStats(props, geojson) {
+    const statsDiv = document.getElementById('stats');
+    const body = document.getElementById('stats-body');
+    const rows = [];
+
+    // ── Basic BRouter properties ──────────────────────────────────────────
+    const fields = [
+      ['Total distance', 'track-length',    m  => (m / 1000).toFixed(2) + ' km'],
+      ['Est. time',      'total-time',       s  => { const h = Math.floor(s/3600), min = Math.floor((s%3600)/60); return (h ? h+'h ' : '') + min + ' min'; }],
+      ['Energy',         'total-energy',     wh => wh + ' Wh'],
+    ];
+    for (const [label, key, fmt] of fields)
+      if (props[key] != null) rows.push(`<div>${label}: <strong>${fmt(props[key])}</strong></div>`);
+
+    // ── Computed from messages ────────────────────────────────────────────
+    const s = geojson ? computeRouteStats(geojson) : null;
+
+    if (s) {
+      const totalKm = s.totalM / 1000;
+      const fmt1 = v => (v / 1000).toFixed(2);
+      const pct  = v => ((v / s.totalM) * 100).toFixed(1);
+
+      // Elevation gain / loss
+      rows.push(`<div>Elevation gain: <strong>${s.gainM} m</strong></div>`);
+      rows.push(`<div>Elevation loss: <strong>${s.lossM} m</strong></div>`);
+
+      // Max / min grade
+      if (s.maxGrade !== null)
+        rows.push(`<div>Max grade: <strong>${s.maxGrade.toFixed(1)}%</strong> &nbsp; Min grade: <strong>${s.minGrade.toFixed(1)}%</strong></div>`);
+
+      // Surface breakdown
+      rows.push(`<div style="margin-top:4px"><strong>Surface</strong></div>`);
+      rows.push(`<div>Paved: <strong>${fmt1(s.pavedM)} km</strong> <span style="color:#6b7280">(${pct(s.pavedM)}%)</span></div>`);
+      rows.push(`<div>Unpaved: <strong>${fmt1(s.unpavedM)} km</strong> <span style="color:#6b7280">(${pct(s.unpavedM)}%)</span></div>`);
+      if (s.unknownM > 0)
+        rows.push(`<div>Unknown: <strong>${fmt1(s.unknownM)} km</strong> <span style="color:#6b7280">(${pct(s.unknownM)}%)</span></div>`);
+    }
+
+    body.innerHTML = rows.join('');
+    statsDiv.style.display = rows.length ? 'block' : 'none';
+  }
+
+  // ── Download ──────────────────────────────────────────────────────────────
+  document.getElementById('btn-download').addEventListener('click', () => {
+    if (!lastLonlats) return;
+    const fmt       = document.getElementById('format').value;
+    const trackname = document.getElementById('trackname').value || 'brouter';
+    const altidx    = document.getElementById('alternativeidx').value;
+    const qs = buildRouteParams(lastLonlats, fmt);
+    qs.set('trackname', trackname);
+    qs.set('alternativeidx', altidx);
+    window.location.href = `/download?${qs}`;
+  });
+
+  // ── My location ───────────────────────────────────────────────────────────
+  document.getElementById('btn-locate').addEventListener('click', () => {
+    const btn = document.getElementById('btn-locate');
+    btn.disabled = true;
+    btn.textContent = 'Locating…';
+    map.once('locationfound', e => {
+      map.setView(e.latlng, 13);
+      btn.disabled = false; btn.textContent = 'My location';
+    });
+    map.once('locationerror', () => {
+      setStatus('Could not determine your location.', 'error');
+      btn.disabled = false; btn.textContent = 'My location';
+    });
+    map.locate();
+  });
+
+  // ── Clear ─────────────────────────────────────────────────────────────────
+  document.getElementById('btn-clear').addEventListener('click', () => {
+    if (startMarker) { map.removeLayer(startMarker); startMarker = null; }
+    if (endMarker)   { map.removeLayer(endMarker);   endMarker   = null; }
+    if (routeLayer)  { map.removeLayer(routeLayer);  routeLayer  = null; }
+    ['start-lon','start-lat','end-lon','end-lat'].forEach(id => document.getElementById(id).value = '');
+    document.getElementById('btn-download').disabled = true;
+    document.getElementById('stats').style.display = 'none';
+    lastLonlats = null;
+    setStatus('', '');
+    clearElevationProfile();
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // ── Elevation profile ─────────────────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════════════════
+
+  const SURFACE_COLORS = {
+    // paved
+    asphalt: '#6b7280',  concrete: '#6b7280',  paved: '#6b7280',
+    paving_stones: '#9ca3af', sett: '#9ca3af', cobblestone: '#9ca3af',
+    // gravel / compacted
+    gravel: '#f97316', fine_gravel: '#f97316', compacted: '#f97316',
+    pebblestone: '#f97316', unpaved: '#f97316',
+    // dirt / natural
+    dirt: '#92400e', ground: '#92400e', grass: '#92400e',
+    mud: '#92400e', earth: '#92400e', grass_paver: '#92400e',
+    // sand
+    sand: '#fde68a',
+    // wood
+    wood: '#a16207', metal: '#9ca3af',
+  };
+
+  const HIGHWAY_COLORS = {
+    cycleway: '#16a34a', path: '#16a34a', footway: '#16a34a', track: '#f97316',
+    motorway: '#6b7280', trunk: '#6b7280', primary: '#6b7280',
+    secondary: '#9ca3af', tertiary: '#9ca3af', residential: '#9ca3af',
+    unclassified: '#9ca3af', service: '#9ca3af', living_street: '#9ca3af',
+  };
+
+  const TRACKTYPE_COLORS = {
+    grade1: '#9ca3af', grade2: '#f97316', grade3: '#92400e',
+    grade4: '#92400e', grade5: '#92400e',
+  };
+
+  const SURFACE_LEGEND = [
+    { label: 'Asphalt / Concrete',  color: '#6b7280' },
+    { label: 'Paving stones / Sett', color: '#9ca3af' },
+    { label: 'Gravel / Compacted',  color: '#f97316' },
+    { label: 'Dirt / Ground / Grass', color: '#92400e' },
+    { label: 'Sand',                color: '#fde68a' },
+    { label: 'Cycleway / Path',     color: '#16a34a' },
+    { label: 'Unknown',             color: '#334155' },
+  ];
+
+  function parseTags(wayTagsStr) {
+    const tags = {};
+    for (const part of wayTagsStr.split(' ')) {
+      const eq = part.indexOf('=');
+      if (eq > 0) tags[part.slice(0, eq)] = part.slice(eq + 1);
+    }
+    return tags;
+  }
+
+  function surfaceColor(tags) {
+    if (tags.surface && SURFACE_COLORS[tags.surface]) return SURFACE_COLORS[tags.surface];
+    if (tags.highway && HIGHWAY_COLORS[tags.highway]) return HIGHWAY_COLORS[tags.highway];
+    if (tags.tracktype && TRACKTYPE_COLORS[tags.tracktype]) return TRACKTYPE_COLORS[tags.tracktype];
+    return '#334155'; // unknown
+  }
+
+  function gradientColor(slopePct) {
+    // slopePct: negative = downhill, positive = uphill
+    if      (slopePct <=  -6) return '#1d4ed8';
+    else if (slopePct <=  -2) return '#60a5fa';
+    else if (slopePct <    2) return '#22c55e';
+    else if (slopePct <    6) return '#fbbf24';
+    else if (slopePct <   10) return '#f97316';
+    else                      return '#ef4444';
+  }
+
+  /** Parse messages array into a flat array of points:
+   *  [{cumDist, elev, lat, lon, tags, color_gradient, color_surface}]
+   *  cumDist and elev are in metres.
+   */
+  function parseElevData(geojson) {
+    const props = geojson?.features?.[0]?.properties;
+    if (!props?.messages) return null;
+    const msgs = props.messages;
+    const cols = msgs[0];
+    const iLon  = cols.indexOf('Longitude');
+    const iLat  = cols.indexOf('Latitude');
+    const iElev = cols.indexOf('Elevation');
+    const iDist = cols.indexOf('Distance');
+    const iWay  = cols.indexOf('WayTags');
+    if (iElev < 0 || iDist < 0) return null;
+
+    const pts = [];
+    let cum = 0;
+    for (let r = 1; r < msgs.length; r++) {
+      const row  = msgs[r];
+      const dist = parseInt(row[iDist], 10) || 0;
+      cum += dist;
+      const elev = parseInt(row[iElev], 10);
+      const lon  = iLon >= 0 ? parseInt(row[iLon], 10) / 1e6 : null;
+      const lat  = iLat >= 0 ? parseInt(row[iLat], 10) / 1e6 : null;
+      const tags = iWay >= 0 ? parseTags(row[iWay]) : {};
+      const prevElev = pts.length ? pts[pts.length - 1].elev : elev;
+      const slope = dist > 0 ? (elev - prevElev) / dist * 100 : 0;
+      pts.push({
+        cumDist: cum,
+        elev,
+        lat, lon,
+        colorGradient: gradientColor(slope),
+        colorSurface:  surfaceColor(tags),
+      });
+    }
+    return pts;
+  }
+
+  // PAD_* are pixel padding inside the SVG for axes
+  const PAD_L = 42, PAD_R = 8, PAD_T = 10, PAD_B = 20;
+
+  function drawElevationProfile(geojson) {
+    elevData = parseElevData(geojson);
+    if (!elevData || elevData.length < 2) return;
+
+    // Show panel (expanded)
+    const panel = document.getElementById('profile-panel');
+    panel.classList.remove('collapsed');
+    document.getElementById('btn-toggle-panel').textContent = '▼ Hide';
+
+    // Invalidate map size so it fills the space correctly
+    setTimeout(() => map.invalidateSize(), 50);
+
+    renderChart();
+  }
+
+  function renderChart() {
+    if (!elevData) return;
+    const svg = document.getElementById('elev-svg');
+    const W = svg.clientWidth  || svg.getBoundingClientRect().width  || 800;
+    const H = svg.clientHeight || svg.getBoundingClientRect().height || 130;
+
+    const minElev = Math.min(...elevData.map(p => p.elev));
+    const maxElev = Math.max(...elevData.map(p => p.elev));
+    const elevRange = Math.max(maxElev - minElev, 10); // avoid zero range
+    const totalDist = elevData[elevData.length - 1].cumDist;
+
+    // Coordinate transforms
+    function xOf(d)  { return PAD_L + (d / totalDist) * (W - PAD_L - PAD_R); }
+    function yOf(e)  { return PAD_T + (1 - (e - minElev) / elevRange) * (H - PAD_T - PAD_B); }
+    const yBase = H - PAD_B;
+
+    const ns = 'http://www.w3.org/2000/svg';
+    svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+
+    // Clear previous content
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+
+    // ── Draw one polygon per segment ────────────────────────────────────────
+    const colorKey = elevMode === 'gradient' ? 'colorGradient' : 'colorSurface';
+
+    // First point (virtual segment from 0 to first point)
+    let prevX = xOf(0);
+    let prevY = yOf(elevData[0].elev);
+
+    for (let i = 0; i < elevData.length; i++) {
+      const pt   = elevData[i];
+      const curX = xOf(pt.cumDist);
+      const curY = yOf(pt.elev);
+
+      const poly = document.createElementNS(ns, 'polygon');
+      poly.setAttribute('points',
+        `${prevX},${yBase} ${prevX},${prevY} ${curX},${curY} ${curX},${yBase}`);
+      poly.setAttribute('fill', pt[colorKey]);
+      poly.setAttribute('stroke', 'none');
+      svg.appendChild(poly);
+
+      prevX = curX;
+      prevY = curY;
+    }
+
+    // ── Y axis (elevation) ──────────────────────────────────────────────────
+    const yAxisSteps = 4;
+    for (let i = 0; i <= yAxisSteps; i++) {
+      const e = minElev + (elevRange / yAxisSteps) * i;
+      const y = yOf(e);
+
+      // gridline
+      const line = document.createElementNS(ns, 'line');
+      line.setAttribute('x1', PAD_L); line.setAttribute('x2', W - PAD_R);
+      line.setAttribute('y1', y);     line.setAttribute('y2', y);
+      line.setAttribute('stroke', 'rgba(255,255,255,0.07)');
+      line.setAttribute('stroke-width', '1');
+      svg.appendChild(line);
+
+      // label
+      const txt = document.createElementNS(ns, 'text');
+      txt.setAttribute('x', PAD_L - 4);
+      txt.setAttribute('y', y + 4);
+      txt.setAttribute('text-anchor', 'end');
+      txt.setAttribute('font-size', '9');
+      txt.setAttribute('fill', '#94a3b8');
+      txt.textContent = Math.round(e) + 'm';
+      svg.appendChild(txt);
+    }
+
+    // ── X axis (distance) ───────────────────────────────────────────────────
+    const totalKm = totalDist / 1000;
+    const xStep   = niceStep(totalKm, 5); // aim for ~5 labels
+    for (let km = 0; km <= totalKm + xStep * 0.5; km += xStep) {
+      const x = xOf(km * 1000);
+      if (x > W - PAD_R + 1) break;
+
+      const line = document.createElementNS(ns, 'line');
+      line.setAttribute('x1', x); line.setAttribute('x2', x);
+      line.setAttribute('y1', PAD_T); line.setAttribute('y2', yBase);
+      line.setAttribute('stroke', 'rgba(255,255,255,0.07)');
+      line.setAttribute('stroke-width', '1');
+      svg.appendChild(line);
+
+      const txt = document.createElementNS(ns, 'text');
+      txt.setAttribute('x', x);
+      txt.setAttribute('y', H - 5);
+      txt.setAttribute('text-anchor', 'middle');
+      txt.setAttribute('font-size', '9');
+      txt.setAttribute('fill', '#94a3b8');
+      txt.textContent = km.toFixed(km < 10 ? 1 : 0) + 'km';
+      svg.appendChild(txt);
+    }
+
+    // Store helpers on elevData for hover use
+    elevData._W = W; elevData._H = H;
+    elevData._xOf = xOf; elevData._yOf = yOf;
+    elevData._totalDist = totalDist;
+    elevData._minElev = minElev; elevData._elevRange = elevRange;
+
+    // ── Surface legend ───────────────────────────────────────────────────────
+    updateSurfaceLegend();
+  }
+
+  function niceStep(range, targetSteps) {
+    const raw = range / targetSteps;
+    const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    const frac = raw / mag;
+    let nice;
+    if      (frac < 1.5) nice = 1;
+    else if (frac < 3.5) nice = 2;
+    else if (frac < 7.5) nice = 5;
+    else                 nice = 10;
+    return nice * mag;
+  }
+
+  function updateSurfaceLegend() {
+    const leg = document.getElementById('surface-legend');
+    if (elevMode !== 'surface') { leg.classList.remove('visible'); return; }
+    leg.classList.add('visible');
+    // Only show colours actually used in this route
+    const used = new Set(elevData.map(p => p.colorSurface));
+    const items = SURFACE_LEGEND.filter(item => used.has(item.color));
+    leg.innerHTML = items.map(item =>
+      `<div class="surf-item">
+        <div class="surf-swatch" style="background:${item.color}"></div>${item.label}
+      </div>`
+    ).join('');
+  }
+
+  function clearElevationProfile() {
+    elevData = null;
+    const svg = document.getElementById('elev-svg');
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+    if (hoverMarker) { map.removeLayer(hoverMarker); hoverMarker = null; }
+    document.getElementById('elev-hairline').style.display = 'none';
+    document.getElementById('elev-tooltip').style.display = 'none';
+    document.getElementById('surface-legend').classList.remove('visible');
+    const panel = document.getElementById('profile-panel');
+    panel.classList.add('collapsed');
+    document.getElementById('btn-toggle-panel').textContent = '▲ Show';
+    map.invalidateSize();
+  }
+
+  // ── Hover interaction ─────────────────────────────────────────────────────
+  const svgEl      = document.getElementById('elev-svg');
+  const hairline   = document.getElementById('elev-hairline');
+  const tooltip    = document.getElementById('elev-tooltip');
+  const panelBody  = document.getElementById('profile-panel-body');
+
+  svgEl.addEventListener('mousemove', e => {
+    if (!elevData || elevData.length < 2) return;
+    const rect = svgEl.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+
+    // Convert pixel x → distance
+    const { _xOf, _totalDist } = elevData;
+    const dist = Math.max(0, Math.min(_totalDist,
+      (_totalDist * (mouseX - PAD_L)) / (rect.width - PAD_L - PAD_R)
+    ));
+
+    // Find surrounding points by binary search
+    let lo = 0, hi = elevData.length - 1;
+    while (lo < hi - 1) {
+      const mid = (lo + hi) >> 1;
+      if (elevData[mid].cumDist < dist) lo = mid; else hi = mid;
+    }
+
+    // Interpolate elevation + lat/lon
+    const a = elevData[lo], b = elevData[hi];
+    const t = b.cumDist > a.cumDist
+      ? (dist - a.cumDist) / (b.cumDist - a.cumDist) : 0;
+    const elev = a.elev + t * (b.elev - a.elev);
+    const lat  = a.lat  != null ? a.lat  + t * (b.lat  - a.lat)  : null;
+    const lon  = a.lon  != null ? a.lon  + t * (b.lon  - a.lon)  : null;
+
+    // Hairline
+    hairline.style.left    = mouseX + 'px';
+    hairline.style.display = 'block';
+
+    // Tooltip — flip to left if near right edge
+    const km   = (dist / 1000).toFixed(2);
+    const elevM = Math.round(elev);
+    tooltip.textContent = `${km} km · ${elevM} m`;
+    const tipW = 100; // approx tooltip width
+    const flip = mouseX + tipW + 14 > rect.width;
+    tooltip.style.left    = flip ? (mouseX - tipW - 6) + 'px' : (mouseX + 10) + 'px';
+    tooltip.style.display = 'block';
+
+    // Map hover marker
+    if (lat != null && lon != null) {
+      if (!hoverMarker) {
+        hoverMarker = L.circleMarker([lat, lon], {
+          radius: 6, color: 'white', weight: 2,
+          fillColor: '#f59e0b', fillOpacity: 1,
+        }).addTo(map);
+      } else {
+        hoverMarker.setLatLng([lat, lon]);
+      }
+    }
+  });
+
+  svgEl.addEventListener('mouseleave', () => {
+    hairline.style.display = 'none';
+    tooltip.style.display  = 'none';
+    if (hoverMarker) { map.removeLayer(hoverMarker); hoverMarker = null; }
+  });
+
+  // ── Mode toggle ───────────────────────────────────────────────────────────
+  document.getElementById('btn-mode-gradient').addEventListener('click', () => {
+    elevMode = 'gradient';
+    document.getElementById('btn-mode-gradient').classList.add('active');
+    document.getElementById('btn-mode-surface').classList.remove('active');
+    renderChart();
+  });
+  document.getElementById('btn-mode-surface').addEventListener('click', () => {
+    elevMode = 'surface';
+    document.getElementById('btn-mode-surface').classList.add('active');
+    document.getElementById('btn-mode-gradient').classList.remove('active');
+    renderChart();
+  });
+
+  // ── Collapse / expand panel ───────────────────────────────────────────────
+  document.getElementById('btn-toggle-panel').addEventListener('click', () => {
+    const panel = document.getElementById('profile-panel');
+    const collapsed = panel.classList.toggle('collapsed');
+    document.getElementById('btn-toggle-panel').textContent = collapsed ? '▲ Show' : '▼ Hide';
+    setTimeout(() => map.invalidateSize(), 50);
+  });
+
+  // Re-render chart on window resize (SVG width changes)
+  window.addEventListener('resize', () => { if (elevData) renderChart(); });
+</script>
+</body>
+</html>
