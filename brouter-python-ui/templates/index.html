@@ -682,6 +682,8 @@
   let dragSrcIdx   = null; // index of row being dragged
   let locationMarker   = null;
   let locationAccCircle = null;
+  let legCache     = [];   // legCache[i]: cached GeoJSON for wp[i]→wp[i+1], null = needs fetch
+  let lastRouteKey = '';   // detects profile/params changes → invalidates all legs
 
   // ── Marker icons ───────────────────────────────────────────────────────────
   function makeIcon(color, size) {
@@ -736,11 +738,10 @@
   function undo() {
     if (!undoStack.length) return;
     const snap = undoStack.pop();
-    // Remove existing markers
     waypoints.forEach(w => map.removeLayer(w.marker));
     waypoints = [];
-    // Restore
     for (const { lat, lon } of snap) _addWaypointRaw(lat, lon);
+    legCache = new Array(Math.max(0, waypoints.length - 1)).fill(null);
     refreshAllIcons();
     renderWaypointList();
     scheduleRoute();
@@ -761,6 +762,10 @@
       const ll = marker.getLatLng();
       wp.lat = ll.lat;
       wp.lon = ll.lng;
+      // Invalidate the legs touching this waypoint
+      const idx = waypoints.indexOf(wp);
+      if (idx > 0)                    legCache[idx - 1] = null;
+      if (idx < waypoints.length - 1) legCache[idx]     = null;
       refreshAllIcons();
       renderWaypointList();
       scheduleRoute();
@@ -780,6 +785,7 @@
   function addWaypoint(lat, lon) {
     pushUndo();
     _addWaypointRaw(lat, lon);
+    legCache.push(null); // new leg: previous last wp → new wp
     refreshAllIcons();
     renderWaypointList();
     scheduleRoute();
@@ -787,6 +793,10 @@
 
   function removeWaypoint(i) {
     pushUndo();
+    const n = waypoints.length;
+    if (i === 0)       legCache.splice(0, 1);          // drop leg 0→1; leg 1→2 shifts to 0
+    else if (i === n-1) legCache.splice(n - 2, 1);     // drop last leg
+    else { legCache.splice(i, 1); legCache[i - 1] = null; } // replace two legs with one
     map.removeLayer(waypoints[i].marker);
     waypoints.splice(i, 1);
     refreshAllIcons();
@@ -798,6 +808,7 @@
     if (waypoints.length < 2) return;
     pushUndo();
     waypoints.reverse();
+    legCache = new Array(waypoints.length - 1).fill(null); // reversed legs are different routes
     waypoints.forEach(w => w.marker.setLatLng([w.lat, w.lon]));
     refreshAllIcons();
     renderWaypointList();
@@ -809,6 +820,7 @@
     pushUndo();
     waypoints.forEach(w => map.removeLayer(w.marker));
     waypoints = [];
+    legCache = [];
     renderWaypointList();
     if (routeLayer)    { map.removeLayer(routeLayer);    routeLayer    = null; }
     if (routeHitLayer) { map.removeLayer(routeHitLayer); routeHitLayer = null; }
@@ -901,6 +913,8 @@
         // Move dragSrcIdx to position i
         const [moved] = waypoints.splice(dragSrcIdx, 1);
         waypoints.splice(i, 0, moved);
+        // Reorder changes the legs touched by both src and dest positions
+        legCache = new Array(waypoints.length - 1).fill(null);
         // Sync all marker positions (positions didn't change, only order in array)
         refreshAllIcons();
         renderWaypointList();
@@ -1140,15 +1154,141 @@
     return waypoints.map(w => `${w.lon.toFixed(6)},${w.lat.toFixed(6)}`).join('|');
   }
 
+  // ── Route key: detects profile/params changes that invalidate all legs ────
+  function routeKey() {
+    const overrides = [...getProfileOverrides()].map(([k, v]) => `${k}=${v}`).join(',');
+    return `${document.getElementById('profile').value}|${document.getElementById('alternativeidx').value}|${overrides}`;
+  }
+
+  // ── Fetch a single leg (wp[i] → wp[i+1]) from BRouter ────────────────────
+  async function fetchLeg(i) {
+    const lonlats = `${waypoints[i].lon.toFixed(6)},${waypoints[i].lat.toFixed(6)}|${waypoints[i+1].lon.toFixed(6)},${waypoints[i+1].lat.toFixed(6)}`;
+    const resp = await fetch(`/route?${buildRouteParams(lonlats, null)}`);
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Routing failed');
+    return data;
+  }
+
+  // ── Stitch cached legs into one GeoJSON-like object ───────────────────────
+  function stitchLegs(legs) {
+    if (legs.length === 1) return legs[0];
+
+    let allCoords   = [];
+    let allMessages = null;
+    let totalLength = 0, totalTime = 0, totalEnergy = 0;
+
+    for (let i = 0; i < legs.length; i++) {
+      const feat   = legs[i].features[0];
+      const coords = feat.geometry.coordinates;
+      const msgs   = feat.properties.messages;
+      const props  = feat.properties;
+
+      // Merge coords — skip first point of subsequent legs (duplicate junction)
+      allCoords = i === 0 ? [...coords] : [...allCoords, ...coords.slice(1)];
+
+      // Merge messages — keep header from first leg, data rows from all
+      if (msgs && msgs.length > 1) {
+        if (!allMessages) allMessages = [msgs[0]];
+        allMessages.push(...msgs.slice(1));
+      }
+
+      totalLength += parseFloat(props['track-length']) || 0;
+      totalTime   += parseFloat(props['total-time'])   || 0;
+      totalEnergy += parseFloat(props['total-energy']) || 0;
+    }
+
+    return {
+      type: 'FeatureCollection',
+      features: [{
+        type: 'Feature',
+        geometry: { type: 'LineString', coordinates: allCoords },
+        properties: {
+          messages:       allMessages,
+          'track-length': totalLength,
+          'total-time':   totalTime,
+          'total-energy': totalEnergy,
+        },
+      }],
+    };
+  }
+
+  // ── Render a complete stitched route onto the map ─────────────────────────
+  function renderRoute(data, fitBounds) {
+    if (routeLayer)    { map.removeLayer(routeLayer);    routeLayer    = null; }
+    if (routeHitLayer) { map.removeLayer(routeHitLayer); routeHitLayer = null; }
+
+    const segments   = buildSurfaceLines(data);
+    routeSegments    = segments;
+    const geomCoords = data.features?.[0]?.geometry?.coordinates;
+    const allLatLngs = geomCoords ? geomCoords.map(c => [c[1], c[0]]) : [];
+    if (allLatLngs.length) { routeBounds = L.latLngBounds(allLatLngs); fitRouteControl.setEnabled(true); }
+
+    if (segments) {
+      const casings = segments.map(({ latlngs, category }) => L.polyline(latlngs, {
+        color: 'rgba(0,0,0,0.45)', weight: category === 'unpaved' ? 5 : 6,
+        opacity: category === 'unknown' ? 0.45 : 1,
+        lineCap: 'round', lineJoin: 'round', interactive: false,
+      }));
+      const fills = segments.map(({ latlngs, category }) => L.polyline(latlngs, {
+        color:     category === 'unpaved' ? '#fbbf24' : '#3b82f6',
+        weight:    3, opacity: category === 'unknown' ? 0.5 : 0.92,
+        dashArray: category === 'unpaved' ? '8, 8' : null,
+        lineCap: 'butt', lineJoin: 'round', interactive: false,
+      }));
+      routeLayer = L.layerGroup([...casings, ...fills]).addTo(map);
+    } else {
+      const casing = L.geoJSON(data, { style: { color: 'rgba(0,0,0,0.45)', weight: 6 }, interactive: false });
+      const fill   = L.geoJSON(data, { style: { color: '#3b82f6', weight: 3, opacity: 0.92 }, interactive: false });
+      routeLayer = L.layerGroup([casing, fill]).addTo(map);
+    }
+
+    routeGeom = null;
+    if (geomCoords && geomCoords.length >= 2) {
+      let cum = 0;
+      routeGeom = geomCoords.map((c, i) => {
+        if (i > 0) {
+          const [lon1, lat1] = geomCoords[i - 1], [lon2, lat2] = c;
+          const dLat = (lat2 - lat1) * 111320;
+          const dLon = (lon2 - lon1) * 111320 * Math.cos((lat1 + lat2) / 2 * Math.PI / 180);
+          cum += Math.sqrt(dLat * dLat + dLon * dLon);
+        }
+        return { lat: c[1], lon: c[0], cumDist: cum };
+      });
+      routeWpSegs = waypoints.map(w => {
+        let best = 0, bestD = Infinity;
+        for (let i = 0; i < routeGeom.length; i++) {
+          const d = (routeGeom[i].lat - w.lat) ** 2 + (routeGeom[i].lon - w.lon) ** 2;
+          if (d < bestD) { bestD = d; best = i; }
+        }
+        return best;
+      });
+    }
+
+    if (allLatLngs.length) {
+      routeHitLayer = L.polyline(allLatLngs, { weight: 20, opacity: 0.001, interactive: true }).addTo(map);
+      routeHitLayer.on('mousemove', onRouteMouseMove);
+      routeHitLayer.on('mouseout',  onRouteMouseOut);
+      routeHitLayer.on('mousedown', onRouteMouseDown);
+    }
+
+    if (fitBounds && allLatLngs.length)
+      map.fitBounds(L.latLngBounds(allLatLngs), { padding: [30, 30] });
+
+    showStats(data?.features?.[0]?.properties ?? {}, data);
+    document.getElementById('btn-download').disabled = false;
+    drawElevationProfile(data);
+  }
+
   // ── Auto-route with debounce ───────────────────────────────────────────────
   function scheduleRoute() {
     if (routeTimer) { clearTimeout(routeTimer); routeTimer = null; }
     if (waypoints.length < 2) {
       if (routeLayer)    { map.removeLayer(routeLayer);    routeLayer    = null; }
-    if (routeHitLayer) { map.removeLayer(routeHitLayer); routeHitLayer = null; }
-    routeGeom = null; routeWpSegs = null;
-    removeSelectionOverlay();
-    elevSelection = null; routeBounds = null; routeSegments = null;
+      if (routeHitLayer) { map.removeLayer(routeHitLayer); routeHitLayer = null; }
+      routeGeom = null; routeWpSegs = null;
+      removeSelectionOverlay();
+      elevSelection = null; routeBounds = null; routeSegments = null;
+      fitRouteControl.setEnabled(false);
       document.getElementById('btn-download').disabled = true;
       document.getElementById('stats').style.display = 'none';
       clearElevationProfile();
@@ -1158,104 +1298,42 @@
   }
 
   async function calculateRoute() {
-    const lonlats  = currentLonlats();
+    const n = waypoints.length;
+    if (n < 2) return;
+
+    // Detect profile/params change → invalidate entire cache
+    const key = routeKey();
+    if (key !== lastRouteKey) { lastRouteKey = key; legCache = new Array(n - 1).fill(null); }
+
+    // Ensure legCache is the right length (pad with null if waypoints were added)
+    while (legCache.length < n - 1) legCache.push(null);
+    legCache.length = n - 1;
+
+    const nullIdxs = legCache.reduce((acc, v, i) => { if (v === null) acc.push(i); return acc; }, []);
+    if (!nullIdxs.length) {
+      // All legs cached — just re-stitch and re-render (e.g. after resize)
+      renderRoute(stitchLegs(legCache), false);
+      setStatus('Route calculated.', 'ok');
+      return;
+    }
+
     const wasEmpty = !routeLayer;
-    setStatus('Calculating…', 'info');
-    if (routeLayer)    { map.removeLayer(routeLayer);    routeLayer    = null; }
-    if (routeHitLayer) { map.removeLayer(routeHitLayer); routeHitLayer = null; }
-    routeGeom = null; routeWpSegs = null;
+    setStatus(`Calculating… (${nullIdxs.length} leg${nullIdxs.length > 1 ? 's' : ''})`, 'info');
     removeSelectionOverlay();
     elevSelection = null; routeSegments = null;
     hideSelStats();
 
     try {
-      const qs   = buildRouteParams(lonlats, null);
-      const resp = await fetch(`/route?${qs}`);
-      const data = await resp.json();
+      // Fetch all stale legs in parallel
+      await Promise.all(nullIdxs.map(async i => {
+        legCache[i] = await fetchLeg(i);
+      }));
 
-      if (!resp.ok) {
-        setStatus(data.error || 'Routing failed.', 'error');
-        return;
-      }
-
-      // Build surface-split polylines (paved=solid, unpaved=dashed, unknown=semi-transparent)
-      const segments = buildSurfaceLines(data);
-      routeSegments = segments;
-      const geomCoords = data.features?.[0]?.geometry?.coordinates;
-      const allLatLngs = geomCoords ? geomCoords.map(c => [c[1], c[0]]) : [];
-      if (allLatLngs.length) { routeBounds = L.latLngBounds(allLatLngs); fitRouteControl.setEnabled(true); }
-
-      // Build cased route polylines: all casings first (z-order), then all fills
-      if (segments) {
-        const casings = segments.map(({ latlngs, category }) => L.polyline(latlngs, {
-          color:       'rgba(0,0,0,0.45)',
-          weight:      category === 'unpaved' ? 5 : 6,
-          opacity:     category === 'unknown' ? 0.45 : 1,
-          lineCap:     'round',
-          lineJoin:    'round',
-          interactive: false,
-        }));
-        const fills = segments.map(({ latlngs, category }) => L.polyline(latlngs, {
-          color:       category === 'unpaved' ? '#fbbf24' : '#3b82f6',
-          weight:      3,
-          opacity:     category === 'unknown' ? 0.5 : 0.92,
-          dashArray:   category === 'unpaved' ? '8, 8' : null,
-          lineCap:     'butt',
-          lineJoin:    'round',
-          interactive: false,
-        }));
-        routeLayer = L.layerGroup([...casings, ...fills]).addTo(map);
-      } else {
-        // Fallback: plain cased line if messages unavailable
-        const casing = L.geoJSON(data, { style: { color: 'rgba(0,0,0,0.45)', weight: 6, opacity: 1 }, interactive: false });
-        const fill   = L.geoJSON(data, { style: { color: '#3b82f6', weight: 3, opacity: 0.92 }, interactive: false });
-        routeLayer = L.layerGroup([casing, fill]).addTo(map);
-      }
-
-      // Build dense geometry lookup for smooth route hover
-      routeGeom = null;
-      if (geomCoords && geomCoords.length >= 2) {
-        let cum = 0;
-        routeGeom = geomCoords.map((c, i) => {
-          if (i > 0) {
-            const [lon1, lat1] = geomCoords[i - 1];
-            const [lon2, lat2] = c;
-            const dLat = (lat2 - lat1) * 111320;
-            const dLon = (lon2 - lon1) * 111320 * Math.cos((lat1 + lat2) / 2 * Math.PI / 180);
-            cum += Math.sqrt(dLat * dLat + dLon * dLon);
-          }
-          return { lat: c[1], lon: c[0], cumDist: cum };
-        });
-
-        // For each waypoint find its closest routeGeom index (used for insertion)
-        routeWpSegs = waypoints.map(w => {
-          let best = 0, bestD = Infinity;
-          for (let i = 0; i < routeGeom.length; i++) {
-            const d = (routeGeom[i].lat - w.lat) ** 2 + (routeGeom[i].lon - w.lon) ** 2;
-            if (d < bestD) { bestD = d; best = i; }
-          }
-          return best;
-        });
-      }
-
-      // Wide transparent hit-area polyline for hover/insert
-      if (allLatLngs.length) {
-        routeHitLayer = L.polyline(allLatLngs, { weight: 20, opacity: 0.001, interactive: true }).addTo(map);
-        routeHitLayer.on('mousemove', onRouteMouseMove);
-        routeHitLayer.on('mouseout',  onRouteMouseOut);
-        routeHitLayer.on('mousedown', onRouteMouseDown);
-      }
-
-      // Only fit bounds on first route display
-      if (wasEmpty && allLatLngs.length)
-        map.fitBounds(L.latLngBounds(allLatLngs), { padding: [30, 30] });
-
-      showStats(data?.features?.[0]?.properties ?? {}, data);
+      renderRoute(stitchLegs(legCache), wasEmpty);
       setStatus('Route calculated.', 'ok');
-      document.getElementById('btn-download').disabled = false;
-      drawElevationProfile(data);
-
     } catch (err) {
+      // Mark failed legs as null so they retry next time
+      nullIdxs.forEach(i => { if (legCache[i] === null) legCache[i] = null; });
       setStatus('Network error: ' + err.message, 'error');
     }
   }
@@ -1958,6 +2036,10 @@
     const snapLon = routeGeom[bestIdx].lon;
     const wp = { lat: snapLat, lon: snapLon, marker: null };
     waypoints.splice(insertIdx, 0, wp);
+    // legCache: leg[insertIdx-1] was wp[insertIdx-1]→wp[insertIdx], now wp[insertIdx-1]→newWp
+    // A new leg[insertIdx] is needed: newWp→wp[insertIdx]
+    legCache.splice(insertIdx, 0, null);        // insert slot for newWp→next
+    if (insertIdx > 0) legCache[insertIdx - 1] = null; // invalidate prev leg
 
     const marker = L.marker([snapLat, snapLon], {
       icon: makeIcon('#64748b', 10),
@@ -1967,6 +2049,9 @@
       pushUndo();
       const ll = marker.getLatLng();
       wp.lat = ll.lat; wp.lon = ll.lng;
+      const idx = waypoints.indexOf(wp);
+      if (idx > 0)                    legCache[idx - 1] = null;
+      if (idx < waypoints.length - 1) legCache[idx]     = null;
       refreshAllIcons();
       renderWaypointList();
       scheduleRoute();
