@@ -387,6 +387,42 @@
     }
     #profile-panel.collapsed #profile-panel-body { display: none; }
 
+    /* ── Elevation profile — selection / zoom ─────────────────────────── */
+    #elev-svg { cursor: crosshair; }
+    #elev-svg.selecting { cursor: ew-resize; }
+
+    #sel-stats-card {
+      display: none;
+      position: absolute;
+      top: 6px; left: 50px;
+      background: rgba(15,23,42,0.93);
+      border: 1px solid #334155;
+      border-radius: 6px;
+      padding: 6px 10px 6px 10px;
+      font-size: 0.73rem;
+      color: #cbd5e1;
+      z-index: 10;
+      gap: 14px;
+      align-items: center;
+      pointer-events: auto;
+      white-space: nowrap;
+    }
+    #sel-stats-card.visible { display: flex; }
+    .sel-stat { display: flex; flex-direction: column; align-items: center; gap: 1px; }
+    .sel-stat-val { font-size: 0.82rem; font-weight: 600; color: #e2e8f0; }
+    .sel-stat-lbl { font-size: 0.65rem; color: #64748b; }
+    #btn-clear-sel {
+      background: none;
+      border: 1px solid #475569;
+      border-radius: 4px;
+      color: #94a3b8;
+      padding: 2px 6px;
+      font-size: 0.7rem;
+      cursor: pointer;
+      line-height: 1.4;
+    }
+    #btn-clear-sel:hover { background: #334155; color: #e2e8f0; }
+
     #elev-svg {
       width: 100%;
       height: 100%;
@@ -426,6 +462,76 @@
     #surface-legend.visible { display: flex; }
     .surf-item { display: flex; align-items: center; gap: 4px; font-size: 0.68rem; color: #94a3b8; }
     .surf-swatch { width: 14px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+
+    /* ── Search box ──────────────────────────────────────────────────── */
+    #search-wrap {
+      position: relative;
+    }
+    #search-row {
+      display: flex;
+      gap: 6px;
+    }
+    #search-input {
+      flex: 1;
+      min-width: 0;
+    }
+    #btn-search {
+      background: #334155;
+      color: #cbd5e1;
+      padding: 6px 10px;
+      font-size: 0.85rem;
+      flex-shrink: 0;
+    }
+    #btn-search:hover { background: #475569; }
+
+    #search-dropdown {
+      display: none;
+      position: absolute;
+      top: calc(100% + 4px);
+      left: 0; right: 0;
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 4px;
+      z-index: 2000;
+      max-height: 260px;
+      overflow-y: auto;
+    }
+    #search-dropdown.open { display: block; }
+    .search-item {
+      padding: 8px 10px;
+      cursor: pointer;
+      border-bottom: 1px solid #0f172a;
+      font-size: 0.82rem;
+      color: #cbd5e1;
+      line-height: 1.3;
+    }
+    .search-item:last-child { border-bottom: none; }
+    .search-item:hover,
+    .search-item.active { background: #334155; }
+    .search-item-sub {
+      font-size: 0.72rem;
+      color: #64748b;
+      margin-top: 2px;
+    }
+    .search-none {
+      padding: 8px 10px;
+      font-size: 0.82rem;
+      color: #64748b;
+    }
+
+    /* Popup "Add as waypoint" button */
+    .popup-add-btn {
+      margin-top: 6px;
+      padding: 5px 10px;
+      background: #2563eb;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.8rem;
+      width: 100%;
+    }
+    .popup-add-btn:hover { background: #1d4ed8; }
   </style>
 </head>
 <body>
@@ -433,6 +539,15 @@
 <div id="sidebar">
   <button id="sidebar-toggle" title="Collapse sidebar">‹</button>
   <div id="sidebar-content">
+
+  <!-- Search -->
+  <div id="search-wrap">
+    <div id="search-row">
+      <input type="text" id="search-input" placeholder="Search place or address…" autocomplete="off" />
+      <button id="btn-search" title="Search">⌕</button>
+    </div>
+    <div id="search-dropdown"></div>
+  </div>
 
   <!-- Waypoint controls -->
   <div id="waypoint-controls">
@@ -525,6 +640,7 @@
       <svg id="elev-svg"></svg>
       <div id="elev-hairline"></div>
       <div id="elev-tooltip"></div>
+      <div id="sel-stats-card"></div>
     </div>
     <!-- Surface legend -->
     <div id="surface-legend"></div>
@@ -553,6 +669,12 @@
   let routeWpSegs  = null; // routeGeom index of each waypoint (for insertion)
   let elevData     = null;
   let elevMode     = 'gradient'; // 'gradient' | 'surface' | 'highway' | 'tracktype'
+  let elevSelection = null;      // { distStart, distEnd } or null (profile zoom)
+  let selectionLayer = null;     // L.layerGroup overlay for the selected segment
+  let selStartMarker = null;     // L.circleMarker at selection start
+  let selEndMarker   = null;     // L.circleMarker at selection end
+  let routeSegments  = null;     // [{latlngs,category,cumDistStart,cumDistEnd}] from buildSurfaceLines
+  let routeBounds    = null;     // full route L.LatLngBounds (for zoom-out)
   let profileParams = [];
   let hoverMarker  = null;
   let routeTimer   = null; // debounce handle for auto-route
@@ -690,8 +812,10 @@
     renderWaypointList();
     if (routeLayer)    { map.removeLayer(routeLayer);    routeLayer    = null; }
     if (routeHitLayer) { map.removeLayer(routeHitLayer); routeHitLayer = null; }
-    routeGeom = null;
-    document.getElementById('btn-download').disabled = true;
+    routeGeom = null; routeWpSegs = null;
+    removeSelectionOverlay();
+    elevSelection = null; routeBounds = null; routeSegments = null;
+    fitRouteControl.setEnabled(false);
     document.getElementById('stats').style.display = 'none';
     setStatus('', '');
     clearElevationProfile();
@@ -1023,6 +1147,8 @@
       if (routeLayer)    { map.removeLayer(routeLayer);    routeLayer    = null; }
     if (routeHitLayer) { map.removeLayer(routeHitLayer); routeHitLayer = null; }
     routeGeom = null; routeWpSegs = null;
+    removeSelectionOverlay();
+    elevSelection = null; routeBounds = null; routeSegments = null;
       document.getElementById('btn-download').disabled = true;
       document.getElementById('stats').style.display = 'none';
       clearElevationProfile();
@@ -1038,6 +1164,9 @@
     if (routeLayer)    { map.removeLayer(routeLayer);    routeLayer    = null; }
     if (routeHitLayer) { map.removeLayer(routeHitLayer); routeHitLayer = null; }
     routeGeom = null; routeWpSegs = null;
+    removeSelectionOverlay();
+    elevSelection = null; routeSegments = null;
+    hideSelStats();
 
     try {
       const qs   = buildRouteParams(lonlats, null);
@@ -1051,24 +1180,36 @@
 
       // Build surface-split polylines (paved=solid, unpaved=dashed, unknown=semi-transparent)
       const segments = buildSurfaceLines(data);
+      routeSegments = segments;
       const geomCoords = data.features?.[0]?.geometry?.coordinates;
       const allLatLngs = geomCoords ? geomCoords.map(c => [c[1], c[0]]) : [];
+      if (allLatLngs.length) { routeBounds = L.latLngBounds(allLatLngs); fitRouteControl.setEnabled(true); }
 
+      // Build cased route polylines: all casings first (z-order), then all fills
       if (segments) {
-        const layers = segments.map(({ latlngs, category }) => L.polyline(latlngs, {
-          color:     '#2563eb',
-          weight:    category === 'unpaved' ? 3 : 4,
-          opacity:   category === 'unknown' ? 0.55 : 0.85,
-          dashArray: category === 'unpaved' ? '10, 8' : null,
+        const casings = segments.map(({ latlngs, category }) => L.polyline(latlngs, {
+          color:       'rgba(0,0,0,0.45)',
+          weight:      category === 'unpaved' ? 5 : 6,
+          opacity:     category === 'unknown' ? 0.45 : 1,
+          lineCap:     'round',
+          lineJoin:    'round',
           interactive: false,
         }));
-        routeLayer = L.layerGroup(layers).addTo(map);
-      } else {
-        // Fallback: plain line if messages unavailable
-        routeLayer = L.geoJSON(data, {
-          style: { color: '#2563eb', weight: 4, opacity: 0.85 },
+        const fills = segments.map(({ latlngs, category }) => L.polyline(latlngs, {
+          color:       category === 'unpaved' ? '#fbbf24' : '#3b82f6',
+          weight:      3,
+          opacity:     category === 'unknown' ? 0.5 : 0.92,
+          dashArray:   category === 'unpaved' ? '8, 8' : null,
+          lineCap:     'butt',
+          lineJoin:    'round',
           interactive: false,
-        }).addTo(map);
+        }));
+        routeLayer = L.layerGroup([...casings, ...fills]).addTo(map);
+      } else {
+        // Fallback: plain cased line if messages unavailable
+        const casing = L.geoJSON(data, { style: { color: 'rgba(0,0,0,0.45)', weight: 6, opacity: 1 }, interactive: false });
+        const fill   = L.geoJSON(data, { style: { color: '#3b82f6', weight: 3, opacity: 0.92 }, interactive: false });
+        routeLayer = L.layerGroup([casing, fill]).addTo(map);
       }
 
       // Build dense geometry lookup for smooth route hover
@@ -1195,20 +1336,21 @@
     const segments = [];
     let curCat     = categoryAt(geomCum[0]);
     let curPts     = [[coords[0][1], coords[0][0]]];
+    let curStart   = geomCum[0];
 
     for (let i = 1; i < coords.length; i++) {
       const cat = categoryAt(geomCum[i]);
       if (cat === curCat) {
         curPts.push([coords[i][1], coords[i][0]]);
       } else {
-        // Share transition point for a seamless join
         curPts.push([coords[i][1], coords[i][0]]);
-        segments.push({ latlngs: curPts, category: curCat });
-        curCat = cat;
-        curPts = [[coords[i][1], coords[i][0]]];
+        segments.push({ latlngs: curPts, category: curCat, cumDistStart: curStart, cumDistEnd: geomCum[i] });
+        curCat   = cat;
+        curPts   = [[coords[i][1], coords[i][0]]];
+        curStart = geomCum[i];
       }
     }
-    segments.push({ latlngs: curPts, category: curCat });
+    segments.push({ latlngs: curPts, category: curCat, cumDistStart: curStart, cumDistEnd: geomCum[geomCum.length - 1] });
     return segments;
   }
 
@@ -1362,6 +1504,32 @@
   });
   new LocateControl().addTo(map);
 
+  const FitRouteControl = L.Control.extend({
+    options: { position: 'topleft' },
+    onAdd() {
+      const container = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
+      const a = L.DomUtil.create('a', '', container);
+      a.href  = '#';
+      a.title = 'Zoom to route';
+      a.setAttribute('role', 'button');
+      a.innerHTML = '⛶';
+      a.style.fontSize = '16px';
+      L.DomEvent.on(a, 'click', e => {
+        L.DomEvent.stopPropagation(e);
+        L.DomEvent.preventDefault(e);
+        if (routeBounds) map.fitBounds(routeBounds, { padding: [30, 30], animate: true });
+      });
+      this._link = a;
+      return container;
+    },
+    setEnabled(enabled) {
+      this._link.style.color  = enabled ? '' : '#aaa';
+      this._link.style.cursor = enabled ? 'pointer' : 'default';
+    },
+  });
+  const fitRouteControl = new FitRouteControl().addTo(map);
+  fitRouteControl.setEnabled(false);
+
   // ══════════════════════════════════════════════════════════════════════════
   // ── Elevation profile ─────────────────────────────────────────────────────
   // ══════════════════════════════════════════════════════════════════════════
@@ -1475,23 +1643,49 @@
     const W = svg.clientWidth  || svg.getBoundingClientRect().width  || 800;
     const H = svg.clientHeight || svg.getBoundingClientRect().height || 130;
 
+    const totalDist = elevData[elevData.length - 1].cumDist;
+    const chartW    = W - PAD_L - PAD_R;
+    const yBase     = H - PAD_B;
+
+    // ── Piecewise x-mapping when selection is active ─────────────────────
+    // Selection occupies the centre 60%; 20% context on each side.
+    // Without selection: simple linear mapping.
+    const sel = elevSelection;
+    const d0  = sel ? sel.distStart : 0;
+    const d1  = sel ? sel.distEnd   : totalDist;
+
+    function xOf(d) {
+      if (!sel) return PAD_L + (d / totalDist) * chartW;
+      // piecewise: [0,d0]→20%, [d0,d1]→60%, [d1,total]→20%
+      if (d <= d0) return PAD_L + (d0 > 0 ? (d / d0) * 0.20 * chartW : 0);
+      if (d <= d1) return PAD_L + 0.20 * chartW + ((d - d0) / (d1 - d0)) * 0.60 * chartW;
+      const tail = totalDist - d1;
+      return PAD_L + 0.80 * chartW + (tail > 0 ? ((d - d1) / tail) * 0.20 * chartW : 0);
+    }
+    function distOf(x) {
+      const rel = x - PAD_L;
+      if (!sel) return (rel / chartW) * totalDist;
+      if (rel <= 0.20 * chartW) return d0 > 0 ? (rel / (0.20 * chartW)) * d0 : 0;
+      if (rel <= 0.80 * chartW) return d0 + ((rel - 0.20 * chartW) / (0.60 * chartW)) * (d1 - d0);
+      const tail = totalDist - d1;
+      return d1 + (tail > 0 ? ((rel - 0.80 * chartW) / (0.20 * chartW)) * tail : 0);
+    }
+
+    // y-axis: scale to full data always so context renders correctly
     const minElev   = Math.min(...elevData.map(p => p.elev));
     const maxElev   = Math.max(...elevData.map(p => p.elev));
     const elevRange = Math.max(maxElev - minElev, 10);
-    const totalDist = elevData[elevData.length - 1].cumDist;
-
-    function xOf(d) { return PAD_L + (d / totalDist) * (W - PAD_L - PAD_R); }
     function yOf(e) { return PAD_T + (1 - (e - minElev) / elevRange) * (H - PAD_T - PAD_B); }
-    const yBase = H - PAD_B;
 
     const ns = 'http://www.w3.org/2000/svg';
     svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
     while (svg.firstChild) svg.removeChild(svg.firstChild);
 
+    // ── Draw full profile ────────────────────────────────────────────────
     const colorKey = elevMode === 'gradient' ? 'colorGradient' : 'colorSurface';
     let prevX = xOf(0), prevY = yOf(elevData[0].elev);
     for (let i = 0; i < elevData.length; i++) {
-      const pt = elevData[i];
+      const pt   = elevData[i];
       const curX = xOf(pt.cumDist), curY = yOf(pt.elev);
       const poly = document.createElementNS(ns, 'polygon');
       poly.setAttribute('points', `${prevX},${yBase} ${prevX},${prevY} ${curX},${curY} ${curX},${yBase}`);
@@ -1501,7 +1695,7 @@
       prevX = curX; prevY = curY;
     }
 
-    // Y axis
+    // ── Y axis ───────────────────────────────────────────────────────────
     for (let i = 0; i <= 4; i++) {
       const e = minElev + (elevRange / 4) * i;
       const y = yOf(e);
@@ -1517,7 +1711,7 @@
       svg.appendChild(txt);
     }
 
-    // X axis
+    // ── X axis ───────────────────────────────────────────────────────────
     const totalKm = totalDist / 1000;
     const xStep   = niceStep(totalKm, 5);
     for (let km = 0; km <= totalKm + xStep * 0.5; km += xStep) {
@@ -1535,10 +1729,52 @@
       svg.appendChild(txt);
     }
 
-    elevData._W = W; elevData._H = H;
-    elevData._xOf = xOf; elevData._yOf = yOf;
+    // ── Selection overlay: gray film on context zones + boundary lines ───
+    if (sel) {
+      const xL = xOf(d0);
+      const xR = xOf(d1);
+      const filmColor = 'rgba(15,23,42,0.52)';
+
+      // Left context film
+      if (xL > PAD_L) {
+        const r = document.createElementNS(ns, 'rect');
+        r.setAttribute('x', PAD_L); r.setAttribute('y', PAD_T);
+        r.setAttribute('width', xL - PAD_L); r.setAttribute('height', H - PAD_T - PAD_B);
+        r.setAttribute('fill', filmColor); r.setAttribute('pointer-events', 'none');
+        svg.appendChild(r);
+      }
+      // Right context film
+      if (xR < W - PAD_R) {
+        const r = document.createElementNS(ns, 'rect');
+        r.setAttribute('x', xR); r.setAttribute('y', PAD_T);
+        r.setAttribute('width', W - PAD_R - xR); r.setAttribute('height', H - PAD_T - PAD_B);
+        r.setAttribute('fill', filmColor); r.setAttribute('pointer-events', 'none');
+        svg.appendChild(r);
+      }
+      // Left boundary line
+      const lL = document.createElementNS(ns, 'line');
+      lL.setAttribute('x1', xL); lL.setAttribute('x2', xL);
+      lL.setAttribute('y1', PAD_T); lL.setAttribute('y2', yBase);
+      lL.setAttribute('stroke', 'rgba(255,255,255,0.7)'); lL.setAttribute('stroke-width', '1.5');
+      lL.setAttribute('pointer-events', 'none');
+      svg.appendChild(lL);
+      // Right boundary line
+      const lR = document.createElementNS(ns, 'line');
+      lR.setAttribute('x1', xR); lR.setAttribute('x2', xR);
+      lR.setAttribute('y1', PAD_T); lR.setAttribute('y2', yBase);
+      lR.setAttribute('stroke', 'rgba(255,255,255,0.7)'); lR.setAttribute('stroke-width', '1.5');
+      lR.setAttribute('pointer-events', 'none');
+      svg.appendChild(lR);
+    }
+
+    elevData._W      = W;
+    elevData._H      = H;
+    elevData._xOf    = xOf;
+    elevData._yOf    = yOf;
+    elevData._distOf = distOf;
+    elevData._distMin   = 0;
+    elevData._distMax   = totalDist;
     elevData._totalDist = totalDist;
-    elevData._minElev = minElev; elevData._elevRange = elevRange;
 
     updateSurfaceLegend();
   }
@@ -1568,12 +1804,15 @@
 
   function clearElevationProfile() {
     elevData = null;
+    elevSelection = null;
+    removeSelectionOverlay();
     const svg = document.getElementById('elev-svg');
     while (svg.firstChild) svg.removeChild(svg.firstChild);
     if (hoverMarker) { map.removeLayer(hoverMarker); hoverMarker = null; }
     document.getElementById('elev-hairline').style.display = 'none';
     document.getElementById('elev-tooltip').style.display  = 'none';
     document.getElementById('surface-legend').classList.remove('visible');
+    document.getElementById('sel-stats-card').classList.remove('visible');
     document.getElementById('profile-panel').classList.add('collapsed');
     document.getElementById('btn-toggle-panel').textContent = '▲ Show';
     map.invalidateSize();
@@ -1617,12 +1856,13 @@
 
   // ── SVG hover: profile → map marker ──────────────────────────────────────
   svgEl.addEventListener('mousemove', e => {
-    if (!elevData || elevData.length < 2) return;
+    if (!elevData || elevData.length < 2 || svgDragState) return;
     const rect   = svgEl.getBoundingClientRect();
     const mouseX = e.clientX - rect.left;
-
-    const dist = Math.max(0, Math.min(elevData._totalDist,
-      (elevData._totalDist * (mouseX - PAD_L)) / (rect.width - PAD_L - PAD_R)
+    const dMin = elevData._distMin ?? 0;
+    const dMax = dMin + (elevData._totalDist ?? 0);
+    const dist = Math.max(dMin, Math.min(dMax,
+      elevData._distOf ? elevData._distOf(mouseX) : dMin + (dMax - dMin) * (mouseX - PAD_L) / (rect.width - PAD_L - PAD_R)
     ));
     showElevHover(dist);
 
@@ -1763,6 +2003,241 @@
     container.addEventListener('mouseup',   onUp);
   }
 
+  // ── Elevation profile drag-to-select ─────────────────────────────────────
+  let svgDragState = null; // { startX, startDist, isDragging }
+
+  svgEl.addEventListener('mousedown', e => {
+    if (!elevData || !elevData._distOf) return;
+    e.preventDefault();
+    const rect = svgEl.getBoundingClientRect();
+    const x    = e.clientX - rect.left;
+    const dMin = elevData._distMin ?? 0;
+    const dMax = dMin + elevData._totalDist;
+    const dist = Math.max(dMin, Math.min(dMax, elevData._distOf(x)));
+    svgDragState = { startX: x, startDist: dist, isDragging: false };
+    svgEl.classList.add('selecting');
+  });
+
+  // Augment existing mousemove: when dragging, draw band + live map overlay
+  svgEl.addEventListener('mousemove', e => {
+    if (!svgDragState || !elevData) return;
+    if (e.buttons !== 1) { svgDragState = null; svgEl.classList.remove('selecting'); return; }
+    const rect  = svgEl.getBoundingClientRect();
+    const x     = e.clientX - rect.left;
+    const dMin  = elevData._distMin ?? 0;
+    const dMax  = dMin + elevData._totalDist;
+    const dist  = Math.max(dMin, Math.min(dMax, elevData._distOf(x)));
+
+    if (!svgDragState.isDragging && Math.abs(x - svgDragState.startX) > 5) {
+      svgDragState.isDragging = true;
+      hideElevHover();
+      if (hoverMarker) { map.removeLayer(hoverMarker); hoverMarker = null; }
+    }
+    if (!svgDragState.isDragging) return;
+
+    // Draw shaded selection band over the SVG
+    drawSelBand(Math.min(svgDragState.startDist, dist), Math.max(svgDragState.startDist, dist));
+    // Live map overlay
+    updateSelectionLayer(
+      Math.min(svgDragState.startDist, dist),
+      Math.max(svgDragState.startDist, dist)
+    );
+  });
+
+  svgEl.addEventListener('mouseup', e => {
+    if (!svgDragState) return;
+    const rect  = svgEl.getBoundingClientRect();
+    const x     = e.clientX - rect.left;
+    const dMin  = elevData?._distMin ?? 0;
+    const dMax  = dMin + (elevData?._totalDist ?? 0);
+    const dist  = Math.max(dMin, Math.min(dMax, elevData?._distOf ? elevData._distOf(x) : dMin));
+
+    if (svgDragState.isDragging) {
+      const d0 = Math.min(svgDragState.startDist, dist);
+      const d1 = Math.max(svgDragState.startDist, dist);
+      if (d1 - d0 > 200) {
+        commitSelection(d0, d1);
+      } else {
+        // Too small — discard, clear any live overlay
+        removeSelectionOverlay();
+        renderChart();
+      }
+    } else {
+      // Plain click → clear selection
+      clearSelection();
+    }
+    svgDragState = null;
+    svgEl.classList.remove('selecting');
+  });
+
+  // Cancel drag if mouse leaves SVG without releasing
+  svgEl.addEventListener('mouseleave', () => {
+    if (svgDragState?.isDragging) {
+      // Keep live overlay but cancel drag state; user may mouseup outside
+    }
+  });
+  document.addEventListener('mouseup', () => {
+    if (svgDragState) { svgDragState = null; svgEl.classList.remove('selecting'); }
+  });
+
+  /** Draw the semi-transparent selection band in the SVG. */
+  function drawSelBand(d0, d1) {
+    if (!elevData?._xOf) return;
+    let band = document.getElementById('elev-sel-band');
+    if (!band) {
+      band = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      band.id = 'elev-sel-band';
+      band.setAttribute('pointer-events', 'none');
+    }
+    const x0    = elevData._xOf(d0);
+    const x1    = elevData._xOf(d1);
+    const H     = elevData._H || svgEl.clientHeight || 130;
+    band.setAttribute('x',      Math.min(x0, x1));
+    band.setAttribute('y',      PAD_T);
+    band.setAttribute('width',  Math.abs(x1 - x0));
+    band.setAttribute('height', H - PAD_T - PAD_B);
+    band.setAttribute('fill',   'rgba(37,99,235,0.20)');
+    band.setAttribute('stroke', 'rgba(37,99,235,0.65)');
+    band.setAttribute('stroke-width', '1');
+    svgEl.appendChild(band);
+  }
+
+  /** Update (or create) the orange selection polyline on the map. */
+  /** Remove all selection map layers (overlay + endpoint markers). */
+  function removeSelectionOverlay() {
+    if (selectionLayer) { map.removeLayer(selectionLayer); selectionLayer = null; }
+    if (selStartMarker) { map.removeLayer(selStartMarker); selStartMarker = null; }
+    if (selEndMarker)   { map.removeLayer(selEndMarker);   selEndMarker   = null; }
+  }
+
+  function updateSelectionLayer(d0, d1) {
+    if (!routeGeom) return;
+
+    // Remove existing selection overlay so we always rebuild
+    removeSelectionOverlay();
+
+    // Clip routeGeom points to [d0, d1] but split by surface category using routeSegments
+    // Fall back to a single unsplit segment if routeSegments unavailable
+    let clipped; // [{latlngs, category}]
+    if (routeSegments) {
+      clipped = routeSegments
+        .filter(s => s.cumDistEnd >= d0 && s.cumDistStart <= d1)
+        .map(s => ({
+          category: s.category,
+          latlngs: routeGeom
+            .filter(p => p.cumDist >= Math.max(d0, s.cumDistStart) &&
+                         p.cumDist <= Math.min(d1, s.cumDistEnd))
+            .map(p => [p.lat, p.lon]),
+        }))
+        .filter(s => s.latlngs.length >= 2);
+    } else {
+      clipped = [{
+        category: 'paved',
+        latlngs: routeGeom.filter(p => p.cumDist >= d0 && p.cumDist <= d1).map(p => [p.lat, p.lon]),
+      }];
+    }
+
+    if (!clipped.length) return;
+
+    // Cased selection: casings first, then cyan fills (dashed for unpaved)
+    const casings = clipped.map(({ latlngs, category }) => L.polyline(latlngs, {
+      color: 'rgba(0,0,0,0.55)', weight: category === 'unpaved' ? 7 : 9,
+      lineCap: 'round', lineJoin: 'round', interactive: false,
+    }));
+    const fills = clipped.map(({ latlngs, category }) => L.polyline(latlngs, {
+      color:     '#22d3ee',
+      weight:    category === 'unpaved' ? 3 : 5,
+      opacity:   0.9,
+      dashArray: category === 'unpaved' ? '8, 8' : null,
+      lineCap:   'butt',
+      lineJoin:  'round',
+      interactive: false,
+    }));
+    selectionLayer = L.layerGroup([...casings, ...fills]).addTo(map);
+
+    // Endpoint markers — nearest routeGeom point to d0 and d1
+    const selMarkerStyle = { radius: 6, color: 'white', weight: 2, fillColor: '#22d3ee', fillOpacity: 1, interactive: false };
+    const ptStart = routeGeom.reduce((best, p) => Math.abs(p.cumDist - d0) < Math.abs(best.cumDist - d0) ? p : best);
+    const ptEnd   = routeGeom.reduce((best, p) => Math.abs(p.cumDist - d1) < Math.abs(best.cumDist - d1) ? p : best);
+    selStartMarker = L.circleMarker([ptStart.lat, ptStart.lon], selMarkerStyle).addTo(map);
+    selEndMarker   = L.circleMarker([ptEnd.lat,   ptEnd.lon],   selMarkerStyle).addTo(map);
+  }
+
+  /** Commit the drag selection: zoom chart + map, show stats card. */
+  function commitSelection(d0, d1) {
+    elevSelection = { distStart: d0, distEnd: d1 };
+    updateSelectionLayer(d0, d1);
+
+    // Fit map to selection
+    if (routeGeom) {
+      const pts = routeGeom
+        .filter(p => p.cumDist >= d0 && p.cumDist <= d1)
+        .map(p => [p.lat, p.lon]);
+      if (pts.length) map.fitBounds(L.latLngBounds(pts), { padding: [70, 70], animate: true });
+    }
+
+    renderChart();
+    renderSelStats(d0, d1);
+  }
+
+  /** Clear selection: zoom chart + map back to full route. */
+  function clearSelection() {
+    if (!elevSelection && !selectionLayer) return;
+    elevSelection = null;
+    removeSelectionOverlay();
+    if (routeBounds) map.fitBounds(routeBounds, { padding: [30, 30], animate: true });
+    renderChart();
+    hideSelStats();
+  }
+
+  /** Compute stats for a distance range from elevData. */
+  function computeSelStats(d0, d1) {
+    const pts = elevData.filter(p => p.cumDist >= d0 && p.cumDist <= d1);
+    if (pts.length < 2) return null;
+    let gain = 0, loss = 0, maxGrade = -Infinity, minGrade = Infinity;
+    for (let i = 1; i < pts.length; i++) {
+      const dElev = pts[i].elev - pts[i - 1].elev;
+      const dDist = pts[i].cumDist - pts[i - 1].cumDist;
+      if (dElev > 0) gain += dElev; else loss += Math.abs(dElev);
+      if (dDist > 0) {
+        const g = dElev / dDist * 100;
+        if (g > maxGrade) maxGrade = g;
+        if (g < minGrade) minGrade = g;
+      }
+    }
+    return {
+      distM: d1 - d0,
+      gain:  Math.round(gain),
+      loss:  Math.round(loss),
+      maxGrade: isFinite(maxGrade) ? maxGrade : null,
+      minGrade: isFinite(minGrade) ? minGrade : null,
+    };
+  }
+
+  /** Render the selection stats card overlay. */
+  function renderSelStats(d0, d1) {
+    const card = document.getElementById('sel-stats-card');
+    const s    = computeSelStats(d0, d1);
+    if (!s) { card.classList.remove('visible'); return; }
+
+    const fmtDist  = s.distM >= 1000 ? (s.distM / 1000).toFixed(2) + ' km' : Math.round(s.distM) + ' m';
+    const fmtGrade = g => g != null ? (g > 0 ? '+' : '') + g.toFixed(1) + '%' : '—';
+
+    card.innerHTML = `
+      <div class="sel-stat"><span class="sel-stat-val">${fmtDist}</span><span class="sel-stat-lbl">distance</span></div>
+      <div class="sel-stat"><span class="sel-stat-val">+${s.gain} m</span><span class="sel-stat-lbl">gain</span></div>
+      <div class="sel-stat"><span class="sel-stat-val">−${s.loss} m</span><span class="sel-stat-lbl">loss</span></div>
+      <div class="sel-stat"><span class="sel-stat-val">${fmtGrade(s.maxGrade)}</span><span class="sel-stat-lbl">max grade</span></div>
+      <div class="sel-stat"><span class="sel-stat-val">${fmtGrade(s.minGrade)}</span><span class="sel-stat-lbl">min grade</span></div>
+      <button id="btn-clear-sel" title="Clear selection">✕ Reset</button>`;
+    card.classList.add('visible');
+    document.getElementById('btn-clear-sel').addEventListener('click', clearSelection);
+  }
+
+  function hideSelStats() {
+    document.getElementById('sel-stats-card').classList.remove('visible');
+  }
+
   // ── Mode toggle ───────────────────────────────────────────────────────────
   document.getElementById('btn-mode-gradient').addEventListener('click', () => {
     elevMode = 'gradient';
@@ -1796,6 +2271,151 @@
 
   // Re-render chart on window resize
   window.addEventListener('resize', () => { if (elevData) renderChart(); });
+
+  // ── Photon geocoder search ────────────────────────────────────────────────
+  (function () {
+    const input    = document.getElementById('search-input');
+    const dropdown = document.getElementById('search-dropdown');
+    const btnSearch = document.getElementById('btn-search');
+
+    let searchTimer  = null;
+    let activeIdx    = -1;   // keyboard-highlighted result index
+    let lastResults  = [];   // current result set
+    let searchMarker = null; // temporary pin shown before "Add as waypoint"
+
+    function openDropdown() { dropdown.classList.add('open'); }
+    function closeDropdown() { dropdown.classList.remove('open'); activeIdx = -1; }
+
+    function renderResults(features) {
+      lastResults = features;
+      activeIdx   = -1;
+      dropdown.innerHTML = '';
+
+      if (!features.length) {
+        dropdown.innerHTML = '<div class="search-none">No results found.</div>';
+        openDropdown();
+        return;
+      }
+
+      features.forEach((f, i) => {
+        const p    = f.properties;
+        const name = p.name || p.street || p.city || 'Unknown';
+        const parts = [p.city, p.state, p.country].filter(Boolean);
+        const sub  = parts.join(', ');
+
+        const item = document.createElement('div');
+        item.className = 'search-item';
+        item.innerHTML = `<div>${name}</div>${sub ? `<div class="search-item-sub">${sub}</div>` : ''}`;
+        item.addEventListener('mousedown', e => {
+          e.preventDefault(); // keep input focused
+          selectResult(i);
+        });
+        dropdown.appendChild(item);
+      });
+
+      openDropdown();
+    }
+
+    function highlightItem(idx) {
+      const items = dropdown.querySelectorAll('.search-item');
+      items.forEach((el, i) => el.classList.toggle('active', i === idx));
+    }
+
+    function selectResult(idx) {
+      const f   = lastResults[idx];
+      const [lon, lat] = f.geometry.coordinates;
+      const p   = f.properties;
+      const name = [p.name || p.street, p.city, p.country].filter(Boolean).join(', ');
+
+      input.value = p.name || p.street || p.city || '';
+      closeDropdown();
+
+      // Remove any previous search marker
+      if (searchMarker) { map.removeLayer(searchMarker); searchMarker = null; }
+
+      // Fly to result
+      map.flyTo([lat, lon], Math.max(map.getZoom(), 14), { duration: 1 });
+
+      // Show popup with "Add as waypoint" button
+      searchMarker = L.marker([lat, lon]).addTo(map);
+      const popup = L.popup({ closeButton: true, className: 'search-popup' })
+        .setContent(() => {
+          const div = document.createElement('div');
+          div.style.cssText = 'font-size:0.82rem; color:#1e293b; min-width:160px;';
+          div.innerHTML = `<strong style="display:block;margin-bottom:6px;">${name}</strong>`;
+          const btn = document.createElement('button');
+          btn.className  = 'popup-add-btn';
+          btn.textContent = '+ Add as waypoint';
+          btn.addEventListener('click', () => {
+            addWaypoint(lat, lon);
+            searchMarker.closePopup();
+            map.removeLayer(searchMarker);
+            searchMarker = null;
+            input.value  = '';
+          });
+          div.appendChild(btn);
+          return div;
+        });
+
+      searchMarker.bindPopup(popup).openPopup();
+      searchMarker.on('popupclose', () => {
+        if (searchMarker) { map.removeLayer(searchMarker); searchMarker = null; }
+      });
+    }
+
+    async function doSearch(q) {
+      if (q.length < 3) { closeDropdown(); return; }
+      try {
+        const url  = `https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=6&lang=en`;
+        const resp = await fetch(url);
+        const data = await resp.json();
+        renderResults(data.features || []);
+      } catch {
+        closeDropdown();
+      }
+    }
+
+    // Input: debounced search
+    input.addEventListener('input', () => {
+      clearTimeout(searchTimer);
+      const q = input.value.trim();
+      if (!q) { closeDropdown(); return; }
+      searchTimer = setTimeout(() => doSearch(q), 300);
+    });
+
+    // Keyboard navigation
+    input.addEventListener('keydown', e => {
+      const items = dropdown.querySelectorAll('.search-item');
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        activeIdx = Math.min(activeIdx + 1, items.length - 1);
+        highlightItem(activeIdx);
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        activeIdx = Math.max(activeIdx - 1, 0);
+        highlightItem(activeIdx);
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        if (activeIdx >= 0 && activeIdx < lastResults.length) {
+          selectResult(activeIdx);
+        } else if (lastResults.length > 0) {
+          selectResult(0);
+        } else {
+          doSearch(input.value.trim());
+        }
+      } else if (e.key === 'Escape') {
+        closeDropdown();
+      }
+    });
+
+    // Search button
+    btnSearch.addEventListener('click', () => doSearch(input.value.trim()));
+
+    // Close dropdown when clicking outside
+    document.addEventListener('mousedown', e => {
+      if (!document.getElementById('search-wrap').contains(e.target)) closeDropdown();
+    });
+  })();
 </script>
 </body>
 </html>
