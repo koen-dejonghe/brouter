@@ -22,7 +22,7 @@
     /* ── Sidebar ─────────────────────────────────────────────────────── */
     #sidebar {
       width: 420px;
-      min-width: 320px;
+      min-width: 420px;
       flex-shrink: 0;
       background: #1e293b;
       border-right: 1px solid #334155;
@@ -31,8 +31,45 @@
       padding: 16px;
       gap: 12px;
       overflow-y: auto;
+      overflow-x: hidden;
       color: #94a3b8;
+      transition: width 0.25s ease, min-width 0.25s ease, padding 0.25s ease;
     }
+    #sidebar.collapsed {
+      width: 36px;
+      min-width: 36px;
+      padding: 8px 0;
+      gap: 0;
+    }
+
+    #sidebar-toggle {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 36px;
+      background: #334155;
+      color: #cbd5e1;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 1.1rem;
+      flex-shrink: 0;
+      align-self: flex-end;
+      position: sticky;
+      top: 0;
+      z-index: 1;
+    }
+    #sidebar-toggle:hover { background: #475569; }
+    #sidebar.collapsed #sidebar-toggle { align-self: center; }
+
+    #sidebar-content {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      min-width: 388px; /* prevents content reflow during animation */
+    }
+    #sidebar.collapsed #sidebar-content { visibility: hidden; }
 
     /* Custom scrollbar to match dark theme */
     #sidebar::-webkit-scrollbar { width: 6px; }
@@ -394,7 +431,8 @@
 <body>
 
 <div id="sidebar">
-  <h1>BRouter UI</h1>
+  <button id="sidebar-toggle" title="Collapse sidebar">‹</button>
+  <div id="sidebar-content">
 
   <!-- Waypoint controls -->
   <div id="waypoint-controls">
@@ -466,6 +504,8 @@
     <strong>Route info</strong>
     <div id="stats-body"></div>
   </div>
+
+  </div><!-- /#sidebar-content -->
 </div>
 
 <!-- Map column: map + elevation panel -->
@@ -510,6 +550,7 @@
   let routeLayer   = null;
   let routeHitLayer = null; // transparent wide polyline for easier hover
   let routeGeom    = null; // dense [{lat, lon, cumDist}] from geometry coordinates
+  let routeWpSegs  = null; // routeGeom index of each waypoint (for insertion)
   let elevData     = null;
   let elevMode     = 'gradient'; // 'gradient' | 'surface' | 'highway' | 'tracktype'
   let profileParams = [];
@@ -980,8 +1021,8 @@
     if (routeTimer) { clearTimeout(routeTimer); routeTimer = null; }
     if (waypoints.length < 2) {
       if (routeLayer)    { map.removeLayer(routeLayer);    routeLayer    = null; }
-      if (routeHitLayer) { map.removeLayer(routeHitLayer); routeHitLayer = null; }
-      routeGeom = null;
+    if (routeHitLayer) { map.removeLayer(routeHitLayer); routeHitLayer = null; }
+    routeGeom = null; routeWpSegs = null;
       document.getElementById('btn-download').disabled = true;
       document.getElementById('stats').style.display = 'none';
       clearElevationProfile();
@@ -996,7 +1037,7 @@
     setStatus('Calculating…', 'info');
     if (routeLayer)    { map.removeLayer(routeLayer);    routeLayer    = null; }
     if (routeHitLayer) { map.removeLayer(routeHitLayer); routeHitLayer = null; }
-    routeGeom = null;
+    routeGeom = null; routeWpSegs = null;
 
     try {
       const qs   = buildRouteParams(lonlats, null);
@@ -1044,13 +1085,24 @@
           }
           return { lat: c[1], lon: c[0], cumDist: cum };
         });
+
+        // For each waypoint find its closest routeGeom index (used for insertion)
+        routeWpSegs = waypoints.map(w => {
+          let best = 0, bestD = Infinity;
+          for (let i = 0; i < routeGeom.length; i++) {
+            const d = (routeGeom[i].lat - w.lat) ** 2 + (routeGeom[i].lon - w.lon) ** 2;
+            if (d < bestD) { bestD = d; best = i; }
+          }
+          return best;
+        });
       }
 
-      // Wide transparent hit-area polyline for hover
+      // Wide transparent hit-area polyline for hover/insert
       if (allLatLngs.length) {
         routeHitLayer = L.polyline(allLatLngs, { weight: 20, opacity: 0.001, interactive: true }).addTo(map);
         routeHitLayer.on('mousemove', onRouteMouseMove);
         routeHitLayer.on('mouseout',  onRouteMouseOut);
+        routeHitLayer.on('mousedown', onRouteMouseDown);
       }
 
       // Only fit bounds on first route display
@@ -1605,6 +1657,7 @@
   // ── Route hover: map → profile hairline ──────────────────────────────────
   function onRouteMouseMove(e) {
     if (!routeGeom || routeGeom.length < 2) return;
+    map.getContainer().style.cursor = 'copy';
     const { lat, lng } = e.latlng;
 
     // Find nearest dense geometry point (1939 pts) — snaps marker to route
@@ -1630,8 +1683,84 @@
   }
 
   function onRouteMouseOut() {
+    map.getContainer().style.cursor = '';
     hideElevHover();
     if (hoverMarker) { map.removeLayer(hoverMarker); hoverMarker = null; }
+  }
+  function onRouteMouseDown(e) {
+    if (!routeGeom || !routeWpSegs || routeGeom.length < 2) return;
+    L.DomEvent.stopPropagation(e); // prevent map pan starting
+
+    const { lat, lng } = e.latlng;
+
+    // Nearest routeGeom point
+    let bestIdx = 0, bestDist = Infinity;
+    for (let i = 0; i < routeGeom.length; i++) {
+      const p = routeGeom[i];
+      const d = (p.lat - lat) ** 2 + (p.lon - lng) ** 2;
+      if (d < bestDist) { bestDist = d; bestIdx = i; }
+    }
+
+    // Find which segment this falls in (between waypoint i and i+1)
+    let insertIdx = waypoints.length - 1; // fallback: before last
+    for (let i = 0; i < routeWpSegs.length - 1; i++) {
+      if (bestIdx <= routeWpSegs[i + 1]) { insertIdx = i + 1; break; }
+    }
+
+    pushUndo();
+
+    // Remove hover marker so it doesn't flicker
+    if (hoverMarker) { map.removeLayer(hoverMarker); hoverMarker = null; }
+    hideElevHover();
+
+    // Insert the new waypoint
+    const snapLat = routeGeom[bestIdx].lat;
+    const snapLon = routeGeom[bestIdx].lon;
+    const wp = { lat: snapLat, lon: snapLon, marker: null };
+    waypoints.splice(insertIdx, 0, wp);
+
+    const marker = L.marker([snapLat, snapLon], {
+      icon: makeIcon('#64748b', 10),
+      draggable: true,
+    }).addTo(map);
+    marker.on('dragend', () => {
+      pushUndo();
+      const ll = marker.getLatLng();
+      wp.lat = ll.lat; wp.lon = ll.lng;
+      refreshAllIcons();
+      renderWaypointList();
+      scheduleRoute();
+    });
+    marker.on('mouseover', () => { const i = waypoints.indexOf(wp); if (i >= 0) highlightWaypoint(i); });
+    marker.on('mouseout',  () => { const i = waypoints.indexOf(wp); if (i >= 0) unhighlightWaypoint(i); });
+    wp.marker = marker;
+    refreshAllIcons();
+    renderWaypointList();
+
+    // Disable map dragging and take over pointer events for the initial drag
+    map.dragging.disable();
+    const container = map.getContainer();
+    container.style.cursor = 'grabbing';
+
+    function onMove(ev) {
+      const pt = map.mouseEventToContainerPoint(ev);
+      const ll = map.containerPointToLatLng(pt);
+      wp.lat = ll.lat; wp.lon = ll.lng;
+      marker.setLatLng(ll);
+    }
+
+    function onUp() {
+      container.removeEventListener('mousemove', onMove);
+      container.removeEventListener('mouseup',   onUp);
+      map.dragging.enable();
+      container.style.cursor = '';
+      refreshAllIcons();
+      renderWaypointList();
+      scheduleRoute();
+    }
+
+    container.addEventListener('mousemove', onMove);
+    container.addEventListener('mouseup',   onUp);
   }
 
   // ── Mode toggle ───────────────────────────────────────────────────────────
@@ -1653,7 +1782,16 @@
     const panel     = document.getElementById('profile-panel');
     const collapsed = panel.classList.toggle('collapsed');
     document.getElementById('btn-toggle-panel').textContent = collapsed ? '▲ Show' : '▼ Hide';
-    setTimeout(() => map.invalidateSize(), 50);
+    setTimeout(() => { map.invalidateSize(); if (!collapsed && elevData) renderChart(); }, 50);
+  });
+
+  // ── Collapse / expand sidebar ─────────────────────────────────────────────
+  document.getElementById('sidebar-toggle').addEventListener('click', () => {
+    const sidebar   = document.getElementById('sidebar');
+    const collapsed = sidebar.classList.toggle('collapsed');
+    document.getElementById('sidebar-toggle').textContent = collapsed ? '›' : '‹';
+    document.getElementById('sidebar-toggle').title = collapsed ? 'Expand sidebar' : 'Collapse sidebar';
+    setTimeout(() => { map.invalidateSize(); if (elevData) renderChart(); }, 260); // after transition
   });
 
   // Re-render chart on window resize
