@@ -727,7 +727,7 @@
 
   // ── Undo stack ─────────────────────────────────────────────────────────────
   function snapshot() {
-    return waypoints.map(w => ({ lat: w.lat, lon: w.lon }));
+    return { wps: waypoints.map(w => ({ lat: w.lat, lon: w.lon })), legs: [...legCache] };
   }
 
   function pushUndo() {
@@ -740,8 +740,8 @@
     const snap = undoStack.pop();
     waypoints.forEach(w => map.removeLayer(w.marker));
     waypoints = [];
-    for (const { lat, lon } of snap) _addWaypointRaw(lat, lon);
-    legCache = new Array(Math.max(0, waypoints.length - 1)).fill(null);
+    for (const { lat, lon } of snap.wps) _addWaypointRaw(lat, lon);
+    legCache = snap.legs.slice(0, Math.max(0, waypoints.length - 1));
     refreshAllIcons();
     renderWaypointList();
     scheduleRoute();
