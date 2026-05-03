@@ -212,6 +212,24 @@
     }
     .wp-btns button:hover { background: #334155; color: #e2e8f0; }
 
+    .wp-via-pill {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 4px 8px;
+      background: #0f172a;
+      border: 1px dashed #334155;
+      border-radius: 4px;
+      font-size: 0.73rem;
+      color: #475569;
+      cursor: pointer;
+      user-select: none;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    .wp-via-pill:hover { border-color: #60a5fa; color: #93c5fd; }
+    .wp-via-pill .pill-dots { letter-spacing: 2px; }
+
     /* ── Action buttons ──────────────────────────────────────────────── */
     #btn-download    { background: #16a34a; color: white; font-weight: 600; }
     #btn-download:hover    { background: #15803d; }
@@ -680,6 +698,7 @@
   let routeTimer   = null; // debounce handle for auto-route
   let clickTimer   = null; // guard against dblclick zoom
   let dragSrcIdx   = null; // index of row being dragged
+  let wpListExpanded = false; // whether intermediate waypoints are expanded
   let locationMarker   = null;
   let locationAccCircle = null;
   let legCache     = [];   // legCache[i]: cached GeoJSON for wp[i]→wp[i+1], null = needs fetch
@@ -786,6 +805,7 @@
     pushUndo();
     _addWaypointRaw(lat, lon);
     legCache.push(null); // new leg: previous last wp → new wp
+    if (waypoints.length > 2) wpListExpanded = true; // show the new via point
     refreshAllIcons();
     renderWaypointList();
     scheduleRoute();
@@ -821,6 +841,7 @@
     waypoints.forEach(w => map.removeLayer(w.marker));
     waypoints = [];
     legCache = [];
+    wpListExpanded = false;
     renderWaypointList();
     if (routeLayer)    { map.removeLayer(routeLayer);    routeLayer    = null; }
     if (routeHitLayer) { map.removeLayer(routeHitLayer); routeHitLayer = null; }
@@ -831,13 +852,14 @@
     document.getElementById('stats').style.display = 'none';
     setStatus('', '');
     clearElevationProfile();
+    clearSavedRoute();
   }
 
   // ── Waypoint list rendering ────────────────────────────────────────────────
   // ── Highlight helpers ──────────────────────────────────────────────────────
   function highlightWaypoint(i) {
-    const rows = document.querySelectorAll('#waypoint-list .wp-row');
-    if (rows[i]) rows[i].classList.add('highlighted');
+    const row = document.querySelector(`#waypoint-list .wp-row[data-idx="${i}"]`);
+    if (row) row.classList.add('highlighted');
     const w = waypoints[i];
     if (w) {
       const [color, size] = wpColorSize(i);
@@ -846,8 +868,8 @@
   }
 
   function unhighlightWaypoint(i) {
-    const rows = document.querySelectorAll('#waypoint-list .wp-row');
-    if (rows[i]) rows[i].classList.remove('highlighted');
+    const row = document.querySelector(`#waypoint-list .wp-row[data-idx="${i}"]`);
+    if (row) row.classList.remove('highlighted');
     if (waypoints[i]) waypoints[i].marker.setIcon(iconForIndex(i));
   }
 
@@ -858,73 +880,96 @@
     return ['#64748b', 10];
   }
 
+  function makeWpRow(w, i) {
+    const n = waypoints.length;
+    const color = i === 0 ? '#16a34a' : i === n - 1 ? '#dc2626' : '#64748b';
+    const large = (i === 0 || i === n - 1);
+    const row = document.createElement('div');
+    row.className = 'wp-row';
+    row.dataset.idx = i;
+    row.draggable = true;
+    row.innerHTML = `
+      <div class="wp-handle" title="Drag to reorder">⠿</div>
+      <div class="wp-dot${large ? ' large' : ''}" style="background:${color}"></div>
+      <div class="wp-coords">${w.lat.toFixed(5)}, ${w.lon.toFixed(5)}</div>
+      <div class="wp-btns">
+        <button data-action="rm" data-idx="${i}" title="Remove">✕</button>
+      </div>`;
+
+    row.addEventListener('mouseenter', () => { if (dragSrcIdx === null) highlightWaypoint(i); });
+    row.addEventListener('mouseleave', () => unhighlightWaypoint(i));
+
+    row.addEventListener('dragstart', e => {
+      dragSrcIdx = i;
+      row.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', i);
+    });
+    row.addEventListener('dragend', () => {
+      row.classList.remove('dragging');
+      document.querySelectorAll('.wp-row.drag-over').forEach(r => r.classList.remove('drag-over'));
+      dragSrcIdx = null;
+    });
+    row.addEventListener('dragover', e => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      document.querySelectorAll('.wp-row.drag-over').forEach(r => r.classList.remove('drag-over'));
+      if (i !== dragSrcIdx) row.classList.add('drag-over');
+    });
+    row.addEventListener('dragleave', () => row.classList.remove('drag-over'));
+    row.addEventListener('drop', e => {
+      e.preventDefault();
+      row.classList.remove('drag-over');
+      if (dragSrcIdx === null || dragSrcIdx === i) return;
+      pushUndo();
+      const [moved] = waypoints.splice(dragSrcIdx, 1);
+      waypoints.splice(i, 0, moved);
+      legCache = new Array(waypoints.length - 1).fill(null);
+      refreshAllIcons();
+      renderWaypointList();
+      scheduleRoute();
+    });
+
+    return row;
+  }
+
   function renderWaypointList() {
     const list = document.getElementById('waypoint-list');
     list.innerHTML = '';
     const n = waypoints.length;
+    const viaCount = Math.max(0, n - 2);
+    const collapsed = viaCount > 0 && !wpListExpanded;
 
-    waypoints.forEach((w, i) => {
-      const color = i === 0 ? '#16a34a' : i === n - 1 ? '#dc2626' : '#64748b';
-      const large = (i === 0 || i === n - 1);
-      const row = document.createElement('div');
-      row.className = 'wp-row';
-      row.dataset.idx = i;
-      row.draggable = true;
-      row.innerHTML = `
-        <div class="wp-handle" title="Drag to reorder">⠿</div>
-        <div class="wp-dot${large ? ' large' : ''}" style="background:${color}"></div>
-        <div class="wp-coords">${w.lat.toFixed(5)}, ${w.lon.toFixed(5)}</div>
-        <div class="wp-btns">
-          <button data-action="rm" data-idx="${i}" title="Remove">✕</button>
-        </div>`;
+    // Indices to render: always start (0) and end (n-1);
+    // in expanded mode also all intermediates; in collapsed mode only start+end
+    const indices = collapsed
+      ? [0, n - 1]
+      : waypoints.map((_, i) => i);
 
-      // ── Hover highlight ──────────────────────────────────────────────
-      row.addEventListener('mouseenter', () => { if (dragSrcIdx === null) highlightWaypoint(i); });
-      row.addEventListener('mouseleave', () => unhighlightWaypoint(i));
+    indices.forEach((i, pos) => {
+      list.appendChild(makeWpRow(waypoints[i], i));
 
-      // ── HTML5 drag-and-drop ──────────────────────────────────────────
-      row.addEventListener('dragstart', e => {
-        dragSrcIdx = i;
-        row.classList.add('dragging');
-        e.dataTransfer.effectAllowed = 'move';
-        // Firefox requires some data to be set
-        e.dataTransfer.setData('text/plain', i);
-      });
-      row.addEventListener('dragend', () => {
-        row.classList.remove('dragging');
-        document.querySelectorAll('.wp-row.drag-over').forEach(r => r.classList.remove('drag-over'));
-        dragSrcIdx = null;
-      });
-      row.addEventListener('dragover', e => {
-        e.preventDefault();
-        e.dataTransfer.dropEffect = 'move';
-        // Show insertion indicator only on rows other than the source
-        document.querySelectorAll('.wp-row.drag-over').forEach(r => r.classList.remove('drag-over'));
-        if (i !== dragSrcIdx) row.classList.add('drag-over');
-      });
-      row.addEventListener('dragleave', () => {
-        row.classList.remove('drag-over');
-      });
-      row.addEventListener('drop', e => {
-        e.preventDefault();
-        row.classList.remove('drag-over');
-        if (dragSrcIdx === null || dragSrcIdx === i) return;
-        pushUndo();
-        // Move dragSrcIdx to position i
-        const [moved] = waypoints.splice(dragSrcIdx, 1);
-        waypoints.splice(i, 0, moved);
-        // Reorder changes the legs touched by both src and dest positions
-        legCache = new Array(waypoints.length - 1).fill(null);
-        // Sync all marker positions (positions didn't change, only order in array)
-        refreshAllIcons();
-        renderWaypointList();
-        scheduleRoute();
-      });
-
-      list.appendChild(row);
+      // Insert via-pill between start and end when collapsed
+      if (collapsed && pos === 0) {
+        const pill = document.createElement('div');
+        pill.className = 'wp-via-pill';
+        pill.title = 'Click to expand via points';
+        pill.innerHTML = `<span class="pill-dots">···</span><span>${viaCount} via point${viaCount > 1 ? 's' : ''}</span><span class="pill-dots">···</span>`;
+        pill.addEventListener('click', () => { wpListExpanded = true; renderWaypointList(); });
+        list.appendChild(pill);
+      }
     });
 
-    // Update toolbar button states
+    // Collapse pill shown at the bottom when expanded and there are via points
+    if (!collapsed && viaCount > 0) {
+      const pill = document.createElement('div');
+      pill.className = 'wp-via-pill';
+      pill.title = 'Click to collapse via points';
+      pill.innerHTML = `<span class="pill-dots">···</span><span>collapse</span><span class="pill-dots">···</span>`;
+      pill.addEventListener('click', () => { wpListExpanded = false; renderWaypointList(); });
+      list.appendChild(pill);
+    }
+
     document.getElementById('btn-reverse').disabled   = n < 2;
     document.getElementById('btn-clear-all').disabled = n === 0;
   }
@@ -1009,6 +1054,40 @@
   function loadedOverrides(profile) {
     try { return JSON.parse(localStorage.getItem(storageKey(profile))) || {}; }
     catch { return {}; }
+  }
+
+  // ── Route persistence ──────────────────────────────────────────────────────
+  function saveRoute() {
+    try {
+      if (waypoints.length < 2 || legCache.some(l => l === null)) return;
+      const data = {
+        wps:   waypoints.map(w => ({ lat: w.lat, lon: w.lon })),
+        cache: legCache,
+      };
+      localStorage.setItem('brouter-route', JSON.stringify(data));
+    } catch { /* quota exceeded — ignore */ }
+  }
+
+  function clearSavedRoute() {
+    localStorage.removeItem('brouter-route');
+  }
+
+  function restoreRoute() {
+    try {
+      const raw = localStorage.getItem('brouter-route');
+      if (!raw) return;
+      const { wps, cache } = JSON.parse(raw);
+      if (!wps || wps.length < 2 || cache.length !== wps.length - 1) return;
+      for (const { lat, lon } of wps) _addWaypointRaw(lat, lon);
+      legCache = cache;
+      refreshAllIcons();
+      renderWaypointList();
+      renderRoute(stitchLegs(legCache), true);
+      setStatus('Route restored.', 'ok');
+    } catch(e) {
+      console.warn('restoreRoute failed:', e);
+      clearSavedRoute();
+    }
   }
 
   function isChanged(input) {
@@ -1130,8 +1209,12 @@
   }
 
   refreshTrackName();
+  const savedProfile = localStorage.getItem('brouter-profile');
+  if (savedProfile && document.querySelector(`#profile option[value="${savedProfile}"]`))
+    document.getElementById('profile').value = savedProfile;
   loadProfileParams(document.getElementById('profile').value);
   document.getElementById('profile').addEventListener('change', e => {
+    localStorage.setItem('brouter-profile', e.target.value);
     refreshTrackName();
     loadProfileParams(e.target.value);
     scheduleRoute();
@@ -1271,8 +1354,10 @@
       routeHitLayer.on('mousedown', onRouteMouseDown);
     }
 
-    if (fitBounds && allLatLngs.length)
-      map.fitBounds(L.latLngBounds(allLatLngs), { padding: [30, 30] });
+    if (fitBounds && allLatLngs.length) {
+      const bounds = L.latLngBounds(allLatLngs);
+      map.whenReady(() => map.fitBounds(bounds, { padding: [30, 30] }));
+    }
 
     showStats(data?.features?.[0]?.properties ?? {}, data);
     document.getElementById('btn-download').disabled = false;
@@ -1330,6 +1415,7 @@
       }));
 
       renderRoute(stitchLegs(legCache), wasEmpty);
+      saveRoute();
       setStatus('Route calculated.', 'ok');
     } catch (err) {
       // Mark failed legs as null so they retry next time
@@ -1607,6 +1693,7 @@
   });
   const fitRouteControl = new FitRouteControl().addTo(map);
   fitRouteControl.setEnabled(false);
+  restoreRoute();
 
   // ══════════════════════════════════════════════════════════════════════════
   // ── Elevation profile ─────────────────────────────────────────────────────
