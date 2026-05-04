@@ -219,6 +219,17 @@ button {
 .wp-via-pill .pill-dots { letter-spacing: 2px; }
 
 /* ── Action buttons ──────────────────────────────────────────────── */
+#route-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+#btn-download,
+#btn-import-gpx {
+  width: 100%;
+}
+
 #btn-download    { background: #16a34a; color: white; font-weight: 600; }
 #btn-download:hover    { background: #15803d; }
 #btn-download:disabled { background: #166534; color: #4ade80; cursor: not-allowed; }
@@ -231,34 +242,26 @@ button {
 }
 #btn-import-gpx:hover { background: #1d4ed8; }
 
-#gpx-import .import-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-#gpx-import .import-row.compact {
-  margin-top: 6px;
-  font-size: 0.78rem;
-  color: #94a3b8;
-}
-
-#import-via-km {
-  width: 70px;
-  padding: 4px 6px;
-}
-
-.inline-check {
+.import-progress {
+  margin-top: 2px;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  margin: 0;
-  font-weight: 500;
+  gap: 8px;
+  font-size: 0.78rem;
+  color: #93c5fd;
 }
 
-.hint-inline {
-  color: #64748b;
-  font-size: 0.75rem;
+.import-progress .spinner {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid #334155;
+  border-top-color: #60a5fa;
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 
 /* ── Status ──────────────────────────────────────────────────────── */

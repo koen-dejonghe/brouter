@@ -89,12 +89,27 @@ function parseElevData(geojson) {
 
 function parseElevDataFromGeometry(geojson) {
   const coords = geojson?.features?.[0]?.geometry?.coordinates;
+  const surfaceSegs = geojson?.features?.[0]?.properties?.surface_segments || [];
   if (!coords || coords.length < 2) return null;
-  if (!coords.some(c => c.length >= 3 && Number.isFinite(Number(c[2])))) return null;
+  const hasElev = coords.some(c => c.length >= 3 && Number.isFinite(Number(c[2])));
 
   const pts = [];
   let cum = 0;
-  let prevElev = Number(coords[0][2]);
+  let prevElev = hasElev && Number.isFinite(Number(coords[0][2])) ? Number(coords[0][2]) : 0;
+
+  function surfaceColorAt(d) {
+    if (!surfaceSegs.length) return '#334155';
+    let lo = 0, hi = surfaceSegs.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if ((surfaceSegs[mid].dist_end_m || 0) < d) lo = mid + 1; else hi = mid;
+    }
+    const cat = surfaceSegs[lo]?.category || 'unknown';
+    if (cat === 'paved') return '#6b7280';
+    if (cat === 'unpaved') return '#f97316';
+    return '#334155';
+  }
+
   for (let i = 0; i < coords.length; i++) {
     const c = coords[i];
     const lon = Number(c[0]);
@@ -116,7 +131,7 @@ function parseElevDataFromGeometry(geojson) {
       lat,
       lon,
       colorGradient: gradientColor(slope),
-      colorSurface: '#334155',
+      colorSurface: surfaceColorAt(cum),
     });
     prevElev = elev;
   }

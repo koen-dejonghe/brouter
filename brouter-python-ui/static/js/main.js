@@ -7,7 +7,8 @@ import { buildRouteParams, currentLonlats, scheduleRoute, renderRoute, stitchLeg
 import { renderChart, clearElevationProfile, initElevModeButtons } from './elevation.js';
 import { initGeocoder } from './geocoder.js';
 import { setStatus, saveRoute, clearSavedRoute, storageKey } from './utils.js';
-import { parseGpxString, buildRegularWaypointsFromGeoJson } from './gpx.js';
+import { parseGpxString, buildSmartWaypointsFromGeoJson } from './gpx.js';
+import { parseTags, surfaceCategory } from './stats.js';
 
 // ── Map setup ──────────────────────────────────────────────────────────────
 
@@ -230,49 +231,142 @@ function restoreRoute() {
   }
 }
 
-function startEndWaypointsFromGeoJson(geojson) {
-  const coords = geojson?.features?.[0]?.geometry?.coordinates;
-  if (!coords || coords.length < 2) return [];
-  const first = coords[0];
-  const last = coords[coords.length - 1];
-  return [
-    { lat: first[1], lon: first[0], auto: false },
-    { lat: last[1], lon: last[0], auto: false },
-  ];
+function routeLengthFromCoords(coords) {
+  if (!coords || coords.length < 2) return 0;
+  let total = 0;
+  for (let i = 1; i < coords.length; i++) {
+    const [lon1, lat1] = coords[i - 1];
+    const [lon2, lat2] = coords[i];
+    const dLat = (lat2 - lat1) * 111320;
+    const dLon = (lon2 - lon1) * 111320 * Math.cos((lat1 + lat2) / 2 * Math.PI / 180);
+    total += Math.sqrt(dLat * dLat + dLon * dLon);
+  }
+  return total;
+}
+
+function buildSurfaceSegmentsFromMessages(messages, scale = 1) {
+  if (!messages || messages.length < 2) return [];
+  const cols = messages[0];
+  const iDist = cols.indexOf('Distance');
+  const iWay = cols.indexOf('WayTags');
+  if (iDist < 0) return [];
+
+  const bins = [];
+  let cum = 0;
+  let prev = 0;
+  for (let r = 1; r < messages.length; r++) {
+    const row = messages[r];
+    const dist = parseInt(row[iDist], 10) || 0;
+    cum += dist;
+    const tags = iWay >= 0 ? parseTags(row[iWay]) : {};
+    bins.push({
+      dist_start_m: prev * scale,
+      dist_end_m: cum * scale,
+      category: surfaceCategory(tags),
+      confidence: 'high',
+    });
+    prev = cum;
+  }
+
+  if (!bins.length) return [];
+  const merged = [bins[0]];
+  for (let i = 1; i < bins.length; i++) {
+    const cur = merged[merged.length - 1];
+    const nxt = bins[i];
+    if (cur.category === nxt.category && cur.confidence === nxt.confidence) {
+      cur.dist_end_m = nxt.dist_end_m;
+    } else {
+      merged.push(nxt);
+    }
+  }
+  return merged;
+}
+
+async function enrichImportedSurfaceViaBrouter(geojson, waypoints) {
+  const lonlats = waypoints
+    .map(w => `${w.lon.toFixed(6)},${w.lat.toFixed(6)}`)
+    .join('|');
+  const params = buildRouteParams(lonlats, null);
+  const resp = await fetch(`/route?${params}`);
+  const brouter = await resp.json();
+  if (!resp.ok) throw new Error(brouter.error || 'BRouter enrichment failed');
+
+  const msgs = brouter?.features?.[0]?.properties?.messages;
+  const brouterProps = brouter?.features?.[0]?.properties || {};
+  if (!msgs || msgs.length < 2) return { surfaceSegments: [], surfaceStats: null };
+
+  const brouterCoords = brouter?.features?.[0]?.geometry?.coordinates;
+  const importedCoords = geojson?.features?.[0]?.geometry?.coordinates;
+  const brouterLen = routeLengthFromCoords(brouterCoords);
+  const importedLen = routeLengthFromCoords(importedCoords);
+  const scale = brouterLen > 0 && importedLen > 0 ? (importedLen / brouterLen) : 1;
+  const surfaceSegments = buildSurfaceSegmentsFromMessages(msgs, scale);
+  return {
+    surfaceSegments,
+    surfaceStats: { highPct: 100, mediumPct: 0, lowPct: 0 },
+    routeMetrics: {
+      trackLength: brouterProps['track-length'] ?? null,
+      totalTime: brouterProps['total-time'] ?? null,
+      totalEnergy: brouterProps['total-energy'] ?? null,
+    },
+  };
 }
 
 function initGpxImport() {
   const btn = document.getElementById('btn-import-gpx');
   const input = document.getElementById('gpx-file-input');
-  const chkRegular = document.getElementById('import-regular-vias');
-  const inputKm = document.getElementById('import-via-km');
+  const enrichProgress = document.getElementById('surface-enrich-progress');
+  let importSeq = 0;
 
   btn.addEventListener('click', () => input.click());
 
   input.addEventListener('change', async () => {
+    importSeq += 1;
+    const seq = importSeq;
     const file = input.files?.[0];
     if (!file) return;
 
     try {
       const xml = await file.text();
       const parsed = parseGpxString(xml);
-      const useRegular = chkRegular.checked;
-      const km = Math.max(1, Number(inputKm.value) || 10);
-      const waypoints = useRegular
-        ? buildRegularWaypointsFromGeoJson(parsed.geojson, km)
-        : startEndWaypointsFromGeoJson(parsed.geojson);
+      const waypoints = buildSmartWaypointsFromGeoJson(parsed.geojson);
 
       if (waypoints.length < 2) throw new Error('Could not derive waypoints from GPX');
 
       clearRenderedRouteOnly();
       state.routeSource = 'imported';
-      replaceWaypoints(waypoints, waypoints.length > 2);
+      replaceWaypoints(waypoints, false);
       renderRoute(parsed.geojson, true);
 
       const viaCount = Math.max(0, waypoints.length - 2);
       const name = parsed.name ? ` "${parsed.name}"` : '';
-      setStatus(`Loaded GPX${name}: ${waypoints.length} waypoints (${viaCount} via).`, 'ok');
+      const sm = waypoints.meta;
+      const smartInfo = sm
+        ? ` Smart: ${sm.selectedCount} pts (cap ${sm.adaptiveCap}, spacing ${(sm.adaptiveSpacingM / 1000).toFixed(1)} km).`
+        : '';
+      setStatus(`Loaded GPX${name}: ${waypoints.length} waypoints (${viaCount} via).${smartInfo} Fetching surface via BRouter…`, 'info');
+
+      enrichProgress.style.display = 'inline-flex';
+      try {
+        const enrich = await enrichImportedSurfaceViaBrouter(parsed.geojson, waypoints);
+        if (seq === importSeq) {
+          parsed.geojson.features[0].properties.surface_segments = enrich.surfaceSegments || [];
+          parsed.geojson.features[0].properties.surface_stats = enrich.surfaceStats || null;
+          if (enrich.routeMetrics) {
+            parsed.geojson.features[0].properties['track-length'] = enrich.routeMetrics.trackLength;
+            parsed.geojson.features[0].properties['total-time'] = enrich.routeMetrics.totalTime;
+            parsed.geojson.features[0].properties['total-energy'] = enrich.routeMetrics.totalEnergy;
+          }
+          renderRoute(parsed.geojson, false);
+          setStatus(`Loaded GPX${name}: ${waypoints.length} waypoints (${viaCount} via).${smartInfo}`, 'ok');
+        }
+      } catch {
+        if (seq === importSeq) setStatus('Surface enrichment via BRouter failed. Route loaded without detailed surface tags.', 'info');
+      } finally {
+        if (seq === importSeq) enrichProgress.style.display = 'none';
+      }
     } catch (err) {
+      enrichProgress.style.display = 'none';
       setStatus(`GPX import failed: ${err.message}`, 'error');
     } finally {
       input.value = '';
