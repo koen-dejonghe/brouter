@@ -1,0 +1,50 @@
+/* ── Locate map control ──────────────────────────────────────────── */
+.leaflet-control-locate a {
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.1rem;
+  color: #444;
+  text-decoration: none;
+  cursor: pointer;
+}
+.leaflet-control-locate a.locating {
+  color: #2563eb;
+  animation: spin 1s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Location marker ─────────────────────────────────────────────── */
+@keyframes loc-pulse {
+  0%   { transform: scale(0.5); opacity: 0.8; }
+  100% { transform: scale(3);   opacity: 0; }
+}
+.loc-ring {
+  position: absolute;
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  background: #3b82f6;
+  animation: loc-pulse 1.8s ease-out infinite;
+  top: 0; left: 0;
+}
+.loc-dot {
+  position: absolute;
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  background: #3b82f6;
+  border: 2px solid white;
+  box-shadow: 0 1px 4px rgba(0,0,0,.4);
+  top: 0; left: 0;
+}
+
+/* ── Map column ──────────────────────────────────────────────────── */
+#map-column {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+#map { flex: 1; min-height: 0; }
+
+.picking-cursor { cursor: crosshair !important; }
