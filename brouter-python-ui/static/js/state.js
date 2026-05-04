@@ -2,6 +2,7 @@
 // All modules import this object and read/write its properties directly.
 export const state = {
   map:               null,   // L.Map — set in main.js after map creation
+  routeSource:       'brouter', // 'brouter' | 'imported'
   waypoints:         [],     // [{ lat, lon, marker: L.Marker }]
   undoStack:         [],     // array of snapshots (max 50)
   addingMode:        false,

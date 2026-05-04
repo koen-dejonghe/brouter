@@ -1,12 +1,13 @@
 import { state } from './state.js';
 import { initControls } from './controls.js';
 
-import { renderWaypointList, addWaypoint, removeWaypoint, reverseWaypoints, clearAllWaypoints, undo, _addWaypointRaw } from './waypoints.js';
+import { renderWaypointList, addWaypoint, removeWaypoint, reverseWaypoints, clearAllWaypoints, undo, _addWaypointRaw, replaceWaypoints } from './waypoints.js';
 import { makeLocationIcon, refreshAllIcons } from './icons.js';
-import { buildRouteParams, currentLonlats, scheduleRoute, renderRoute, stitchLegs, getProfileOverrides } from './route.js';
+import { buildRouteParams, currentLonlats, scheduleRoute, renderRoute, stitchLegs, getProfileOverrides, clearRenderedRouteOnly } from './route.js';
 import { renderChart, clearElevationProfile, initElevModeButtons } from './elevation.js';
 import { initGeocoder } from './geocoder.js';
 import { setStatus, saveRoute, clearSavedRoute, storageKey } from './utils.js';
+import { parseGpxString, buildRegularWaypointsFromGeoJson } from './gpx.js';
 
 // ── Map setup ──────────────────────────────────────────────────────────────
 
@@ -229,6 +230,56 @@ function restoreRoute() {
   }
 }
 
+function startEndWaypointsFromGeoJson(geojson) {
+  const coords = geojson?.features?.[0]?.geometry?.coordinates;
+  if (!coords || coords.length < 2) return [];
+  const first = coords[0];
+  const last = coords[coords.length - 1];
+  return [
+    { lat: first[1], lon: first[0], auto: false },
+    { lat: last[1], lon: last[0], auto: false },
+  ];
+}
+
+function initGpxImport() {
+  const btn = document.getElementById('btn-import-gpx');
+  const input = document.getElementById('gpx-file-input');
+  const chkRegular = document.getElementById('import-regular-vias');
+  const inputKm = document.getElementById('import-via-km');
+
+  btn.addEventListener('click', () => input.click());
+
+  input.addEventListener('change', async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+
+    try {
+      const xml = await file.text();
+      const parsed = parseGpxString(xml);
+      const useRegular = chkRegular.checked;
+      const km = Math.max(1, Number(inputKm.value) || 10);
+      const waypoints = useRegular
+        ? buildRegularWaypointsFromGeoJson(parsed.geojson, km)
+        : startEndWaypointsFromGeoJson(parsed.geojson);
+
+      if (waypoints.length < 2) throw new Error('Could not derive waypoints from GPX');
+
+      clearRenderedRouteOnly();
+      state.routeSource = 'imported';
+      replaceWaypoints(waypoints, waypoints.length > 2);
+      renderRoute(parsed.geojson, true);
+
+      const viaCount = Math.max(0, waypoints.length - 2);
+      const name = parsed.name ? ` "${parsed.name}"` : '';
+      setStatus(`Loaded GPX${name}: ${waypoints.length} waypoints (${viaCount} via).`, 'ok');
+    } catch (err) {
+      setStatus(`GPX import failed: ${err.message}`, 'error');
+    } finally {
+      input.value = '';
+    }
+  });
+}
+
 // ── Track name ─────────────────────────────────────────────────────────────
 
 function defaultTrackName() {
@@ -297,6 +348,7 @@ window.addEventListener('resize', () => { if (state.elevData) renderChart(); });
 // ── Geocoder ───────────────────────────────────────────────────────────────
 
 initGeocoder();
+initGpxImport();
 
 // ── Restore saved route ────────────────────────────────────────────────────
 

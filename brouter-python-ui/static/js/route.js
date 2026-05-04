@@ -168,11 +168,33 @@ export function renderRoute(data, fitBounds) {
   drawElevationProfile(data);
 }
 
+export function clearRenderedRouteOnly() {
+  if (state.routeTimer) { clearTimeout(state.routeTimer); state.routeTimer = null; }
+  if (state.routeLayer)    { state.map.removeLayer(state.routeLayer);    state.routeLayer    = null; }
+  if (state.routeHitLayer) { state.map.removeLayer(state.routeHitLayer); state.routeHitLayer = null; }
+  state.routeGeom = null;
+  state.routeWpSegs = null;
+  removeSelectionOverlay();
+  state.elevSelection = null;
+  state.routeBounds = null;
+  state.routeSegments = null;
+  state.fitRouteControl.setEnabled(false);
+  document.getElementById('btn-download').disabled = true;
+  document.getElementById('stats').style.display = 'none';
+  clearElevationProfile();
+}
+
 // ── Route click — insert waypoint at snapped position ────────────────────
 
 function onRouteMouseDown(e) {
   if (!state.routeGeom || !state.routeWpSegs || state.routeGeom.length < 2) return;
   L.DomEvent.stopPropagation(e);
+
+  if (state.routeSource !== 'brouter') {
+    state.routeSource = 'brouter';
+    state.legCache = new Array(Math.max(0, state.waypoints.length - 1)).fill(null);
+    setStatus('Switched to routed mode after waypoint edit.', 'info');
+  }
 
   const { lat, lng } = e.latlng;
 
@@ -248,22 +270,16 @@ function onRouteMouseDown(e) {
 
 export function scheduleRoute() {
   if (state.routeTimer) { clearTimeout(state.routeTimer); state.routeTimer = null; }
+  if (state.routeSource !== 'brouter') return;
   if (state.waypoints.length < 2) {
-    if (state.routeLayer)    { state.map.removeLayer(state.routeLayer);    state.routeLayer    = null; }
-    if (state.routeHitLayer) { state.map.removeLayer(state.routeHitLayer); state.routeHitLayer = null; }
-    state.routeGeom = null; state.routeWpSegs = null;
-    removeSelectionOverlay();
-    state.elevSelection = null; state.routeBounds = null; state.routeSegments = null;
-    state.fitRouteControl.setEnabled(false);
-    document.getElementById('btn-download').disabled = true;
-    document.getElementById('stats').style.display = 'none';
-    clearElevationProfile();
+    clearRenderedRouteOnly();
     return;
   }
   state.routeTimer = setTimeout(calculateRoute, 300);
 }
 
 export async function calculateRoute() {
+  if (state.routeSource !== 'brouter') return;
   const n = state.waypoints.length;
   if (n < 2) return;
 

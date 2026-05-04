@@ -38,6 +38,23 @@
   </div>
   <div id="waypoint-list"></div>
 
+  <!-- GPX import -->
+  <div class="field" id="gpx-import">
+    <label>Import GPX</label>
+    <div class="import-row">
+      <button id="btn-import-gpx" type="button">Import file</button>
+      <input type="file" id="gpx-file-input" accept=".gpx,application/gpx+xml" hidden />
+    </div>
+    <div class="import-row compact">
+      <label class="inline-check" for="import-regular-vias">
+        <input type="checkbox" id="import-regular-vias" checked />
+        Add via points every
+      </label>
+      <input type="number" id="import-via-km" min="1" step="1" value="10" />
+      <span class="hint-inline">km</span>
+    </div>
+  </div>
+
   <!-- Profile -->
   <div class="field">
     <label>Profile</label>

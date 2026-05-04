@@ -56,7 +56,7 @@ function gradientColor(slopePct) {
 
 function parseElevData(geojson) {
   const props = geojson?.features?.[0]?.properties;
-  if (!props?.messages) return null;
+  if (!props?.messages) return parseElevDataFromGeometry(geojson);
   const msgs = props.messages;
   const cols = msgs[0];
   const iLon  = cols.indexOf('Longitude');
@@ -83,6 +83,42 @@ function parseElevData(geojson) {
       colorGradient: gradientColor(slope),
       colorSurface:  surfaceColor(tags),
     });
+  }
+  return pts;
+}
+
+function parseElevDataFromGeometry(geojson) {
+  const coords = geojson?.features?.[0]?.geometry?.coordinates;
+  if (!coords || coords.length < 2) return null;
+  if (!coords.some(c => c.length >= 3 && Number.isFinite(Number(c[2])))) return null;
+
+  const pts = [];
+  let cum = 0;
+  let prevElev = Number(coords[0][2]);
+  for (let i = 0; i < coords.length; i++) {
+    const c = coords[i];
+    const lon = Number(c[0]);
+    const lat = Number(c[1]);
+    const elevRaw = c.length >= 3 ? Number(c[2]) : prevElev;
+    const elev = Number.isFinite(elevRaw) ? elevRaw : prevElev;
+    if (i > 0) {
+      const p = coords[i - 1];
+      const dLat = (lat - Number(p[1])) * 111320;
+      const dLon = (lon - Number(p[0])) * 111320 * Math.cos((Number(p[1]) + lat) / 2 * Math.PI / 180);
+      const dist = Math.sqrt(dLat * dLat + dLon * dLon);
+      cum += dist;
+    }
+    const dDist = i > 0 ? (cum - pts[pts.length - 1].cumDist) : 0;
+    const slope = dDist > 0 ? (elev - prevElev) / dDist * 100 : 0;
+    pts.push({
+      cumDist: cum,
+      elev,
+      lat,
+      lon,
+      colorGradient: gradientColor(slope),
+      colorSurface: '#334155',
+    });
+    prevElev = elev;
   }
   return pts;
 }

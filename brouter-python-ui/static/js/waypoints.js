@@ -10,6 +10,13 @@ function snapshot() {
   return { wps: state.waypoints.map(w => ({ lat: w.lat, lon: w.lon })), legs: [...state.legCache] };
 }
 
+function ensureRoutedMode() {
+  if (state.routeSource === 'brouter') return;
+  state.routeSource = 'brouter';
+  state.legCache = new Array(Math.max(0, state.waypoints.length - 1)).fill(null);
+  setStatus('Switched to routed mode after waypoint edit.', 'info');
+}
+
 export function pushUndo() {
   state.undoStack.push(snapshot());
   if (state.undoStack.length > 50) state.undoStack.shift();
@@ -39,6 +46,7 @@ export function _addWaypointRaw(lat, lon) {
   }).addTo(state.map);
   marker.on('dragend', () => {
     pushUndo();
+    ensureRoutedMode();
     const ll = marker.getLatLng();
     wp.lat = ll.lat;
     wp.lon = ll.lng;
@@ -63,6 +71,7 @@ export function _addWaypointRaw(lat, lon) {
 
 export function addWaypoint(lat, lon) {
   pushUndo();
+  ensureRoutedMode();
   _addWaypointRaw(lat, lon);
   state.legCache.push(null);
   if (state.waypoints.length > 2) state.wpListExpanded = true;
@@ -73,6 +82,7 @@ export function addWaypoint(lat, lon) {
 
 export function removeWaypoint(i) {
   pushUndo();
+  ensureRoutedMode();
   const n = state.waypoints.length;
   if (i === 0)        state.legCache.splice(0, 1);
   else if (i === n-1) state.legCache.splice(n - 2, 1);
@@ -87,6 +97,7 @@ export function removeWaypoint(i) {
 export function reverseWaypoints() {
   if (state.waypoints.length < 2) return;
   pushUndo();
+  ensureRoutedMode();
   state.waypoints.reverse();
   state.legCache = new Array(state.waypoints.length - 1).fill(null);
   state.waypoints.forEach(w => w.marker.setLatLng([w.lat, w.lon]));
@@ -100,6 +111,7 @@ export function clearAllWaypoints() {
   pushUndo();
   state.waypoints.forEach(w => state.map.removeLayer(w.marker));
   state.waypoints = [];
+  state.routeSource = 'brouter';
   state.legCache = [];
   state.wpListExpanded = false;
   renderWaypointList();
@@ -113,6 +125,16 @@ export function clearAllWaypoints() {
   setStatus('', '');
   clearElevationProfile();
   clearSavedRoute();
+}
+
+export function replaceWaypoints(points, expand = false) {
+  state.waypoints.forEach(w => state.map.removeLayer(w.marker));
+  state.waypoints = [];
+  state.legCache = new Array(Math.max(0, points.length - 1)).fill(null);
+  for (const { lat, lon } of points) _addWaypointRaw(lat, lon);
+  state.wpListExpanded = expand;
+  refreshAllIcons();
+  renderWaypointList();
 }
 
 // ── Waypoint list rendering ────────────────────────────────────────────────
@@ -159,6 +181,7 @@ export function makeWpRow(w, i) {
     row.classList.remove('drag-over');
     if (state.dragSrcIdx === null || state.dragSrcIdx === i) return;
     pushUndo();
+    ensureRoutedMode();
     const [moved] = state.waypoints.splice(state.dragSrcIdx, 1);
     state.waypoints.splice(i, 0, moved);
     state.legCache = new Array(state.waypoints.length - 1).fill(null);

@@ -223,6 +223,44 @@ button {
 #btn-download:hover    { background: #15803d; }
 #btn-download:disabled { background: #166534; color: #4ade80; cursor: not-allowed; }
 
+#btn-import-gpx {
+  background: #2563eb;
+  color: #fff;
+  font-weight: 600;
+  padding: 6px 10px;
+}
+#btn-import-gpx:hover { background: #1d4ed8; }
+
+#gpx-import .import-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#gpx-import .import-row.compact {
+  margin-top: 6px;
+  font-size: 0.78rem;
+  color: #94a3b8;
+}
+
+#import-via-km {
+  width: 70px;
+  padding: 4px 6px;
+}
+
+.inline-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-weight: 500;
+}
+
+.hint-inline {
+  color: #64748b;
+  font-size: 0.75rem;
+}
+
 /* ── Status ──────────────────────────────────────────────────────── */
 .status {
   font-size: 0.8rem;
