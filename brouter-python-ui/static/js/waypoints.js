@@ -65,6 +65,15 @@ export function _addWaypointRaw(lat, lon) {
     const i = state.waypoints.indexOf(wp);
     if (i >= 0) unhighlightWaypoint(i);
   });
+  marker.on('contextmenu', e => {
+    L.DomEvent.stopPropagation(e);
+    L.DomEvent.preventDefault(e);
+    const idx = state.waypoints.indexOf(wp);
+    if (idx < 0) return;
+    document.dispatchEvent(new CustomEvent('waypoint-contextmenu', {
+      detail: { idx, lat: wp.lat, lon: wp.lon },
+    }));
+  });
   wp.marker = marker;
   return wp;
 }
@@ -80,6 +89,19 @@ export function addWaypoint(lat, lon) {
   scheduleRoute();
 }
 
+export function closeLoop() {
+  if (state.waypoints.length < 2) return;
+  const s = state.waypoints[0];
+  const e = state.waypoints[state.waypoints.length - 1];
+  const d2 = (s.lat - e.lat) ** 2 + (s.lon - e.lon) ** 2;
+  if (d2 < 1e-12) {
+    setStatus('Route is already closed.', 'info');
+    return;
+  }
+  addWaypoint(s.lat, s.lon);
+  setStatus('Loop closed by appending start waypoint.', 'ok');
+}
+
 export function removeWaypoint(i) {
   pushUndo();
   ensureRoutedMode();
@@ -89,6 +111,57 @@ export function removeWaypoint(i) {
   else { state.legCache.splice(i, 1); state.legCache[i - 1] = null; }
   state.map.removeLayer(state.waypoints[i].marker);
   state.waypoints.splice(i, 1);
+  refreshAllIcons();
+  renderWaypointList();
+  scheduleRoute();
+}
+
+export function insertWaypointAt(index, lat, lon) {
+  if (index < 0 || index > state.waypoints.length) return;
+  pushUndo();
+  ensureRoutedMode();
+
+  const wp = { lat, lon, marker: null };
+  state.waypoints.splice(index, 0, wp);
+  state.legCache.splice(index, 0, null);
+  if (index > 0) state.legCache[index - 1] = null;
+
+  const marker = L.marker([lat, lon], {
+    icon: makeIcon('#64748b', 10),
+    draggable: true,
+  }).addTo(state.map);
+  marker.on('dragend', () => {
+    pushUndo();
+    ensureRoutedMode();
+    const ll = marker.getLatLng();
+    wp.lat = ll.lat;
+    wp.lon = ll.lng;
+    const idx = state.waypoints.indexOf(wp);
+    if (idx > 0) state.legCache[idx - 1] = null;
+    if (idx < state.waypoints.length - 1) state.legCache[idx] = null;
+    refreshAllIcons();
+    renderWaypointList();
+    scheduleRoute();
+  });
+  marker.on('mouseover', () => {
+    const i = state.waypoints.indexOf(wp);
+    if (i >= 0) highlightWaypoint(i);
+  });
+  marker.on('mouseout', () => {
+    const i = state.waypoints.indexOf(wp);
+    if (i >= 0) unhighlightWaypoint(i);
+  });
+  marker.on('contextmenu', e => {
+    L.DomEvent.stopPropagation(e);
+    L.DomEvent.preventDefault(e);
+    const idx = state.waypoints.indexOf(wp);
+    if (idx < 0) return;
+    document.dispatchEvent(new CustomEvent('waypoint-contextmenu', {
+      detail: { idx, lat: wp.lat, lon: wp.lon },
+    }));
+  });
+  wp.marker = marker;
+
   refreshAllIcons();
   renderWaypointList();
   scheduleRoute();
@@ -200,8 +273,21 @@ export function makeWpRow(w, i) {
 
 export function renderWaypointList() {
   const list = document.getElementById('waypoint-list');
+  const toggle = document.getElementById('btn-toggle-waypoints');
+  if (toggle) {
+    toggle.classList.toggle('active', state.wpListVisible);
+    toggle.textContent = state.wpListVisible ? '▾ Waypoints' : '▸ Waypoints';
+  }
+
   list.innerHTML = '';
   const n = state.waypoints.length;
+  if (!state.wpListVisible) {
+    document.getElementById('btn-reverse').disabled   = n < 2;
+    document.getElementById('btn-close-loop').disabled = n < 2;
+    document.getElementById('btn-clear-all').disabled = n === 0;
+    return;
+  }
+
   const viaCount = Math.max(0, n - 2);
   const collapsed = viaCount > 0 && !state.wpListExpanded;
 
@@ -232,5 +318,6 @@ export function renderWaypointList() {
   }
 
   document.getElementById('btn-reverse').disabled   = n < 2;
+  document.getElementById('btn-close-loop').disabled = n < 2;
   document.getElementById('btn-clear-all').disabled = n === 0;
 }

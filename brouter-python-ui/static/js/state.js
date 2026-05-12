@@ -26,6 +26,7 @@ export const state = {
   clickTimer:        null,   // guard against dblclick zoom
   dragSrcIdx:        null,   // index of row being dragged
   wpListExpanded:    false,  // whether intermediate waypoints are expanded
+  wpListVisible:     false,  // whether waypoint list panel is visible
   locationMarker:    null,
   locationAccCircle: null,
   legCache:          [],     // legCache[i]: GeoJSON for wp[i]→wp[i+1], null = stale

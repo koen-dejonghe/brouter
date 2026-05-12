@@ -391,6 +391,47 @@ function onRouteMouseDown(e) {
   container.addEventListener('mouseup',   onUp);
 }
 
+function findNearestRoutePoint(lat, lon) {
+  if (!state.routeGeom || !state.routeGeom.length) return null;
+  let bestIdx = 0;
+  let bestDist = Infinity;
+  for (let i = 0; i < state.routeGeom.length; i++) {
+    const p = state.routeGeom[i];
+    const d = (p.lat - lat) ** 2 + (p.lon - lon) ** 2;
+    if (d < bestDist) {
+      bestDist = d;
+      bestIdx = i;
+    }
+  }
+  return {
+    idx: bestIdx,
+    lat: state.routeGeom[bestIdx].lat,
+    lon: state.routeGeom[bestIdx].lon,
+  };
+}
+
+function routeInsertIndexByGeomIdx(bestIdx) {
+  if (!state.routeWpSegs || !state.routeWpSegs.length) return Math.max(0, state.waypoints.length - 1);
+  let insertIdx = state.waypoints.length - 1;
+  for (let i = 0; i < state.routeWpSegs.length - 1; i++) {
+    if (bestIdx <= state.routeWpSegs[i + 1]) {
+      insertIdx = i + 1;
+      break;
+    }
+  }
+  return insertIdx;
+}
+
+export function getRouteContextInsertion(lat, lon) {
+  const snap = findNearestRoutePoint(lat, lon);
+  if (!snap) return null;
+  return {
+    snapLat: snap.lat,
+    snapLon: snap.lon,
+    insertIdx: routeInsertIndexByGeomIdx(snap.idx),
+  };
+}
+
 // ── Auto-route with debounce ───────────────────────────────────────────────
 
 export function scheduleRoute() {

@@ -14,7 +14,8 @@
   background: #334155;
   color: #cbd5e1;
   padding: 6px 10px;
-  font-size: 0.85rem;
+  /* font-size: 0.85rem; */
+  font-size: 1em;
   flex-shrink: 0;
 }
 #btn-search:hover { background: #475569; }

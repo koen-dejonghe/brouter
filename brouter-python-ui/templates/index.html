@@ -34,7 +34,9 @@
   <div id="waypoint-controls">
     <button id="btn-add-waypoint">+ Add waypoint</button>
     <button id="btn-reverse" disabled title="Reverse route order">⇅ Reverse</button>
+    <button id="btn-close-loop" disabled title="Append start as endpoint">↺ Loop</button>
     <button id="btn-clear-all" disabled title="Remove all waypoints">✕ Clear</button>
+    <button id="btn-toggle-waypoints" title="Show/hide waypoint list">☰ Waypoints</button>
   </div>
   <div id="waypoint-list"></div>
 
@@ -135,6 +137,8 @@
     <div id="surface-legend"></div>
   </div>
 </div>
+
+<div id="context-menu" style="display:none"></div>
 
 <!-- Jinja2 data bridge: pass server-side data to ES modules -->
 <script>

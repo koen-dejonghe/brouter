@@ -1,9 +1,9 @@
 import { state } from './state.js';
 import { initControls } from './controls.js';
 
-import { renderWaypointList, addWaypoint, removeWaypoint, reverseWaypoints, clearAllWaypoints, undo, _addWaypointRaw, replaceWaypoints } from './waypoints.js';
+import { renderWaypointList, addWaypoint, removeWaypoint, reverseWaypoints, clearAllWaypoints, closeLoop, insertWaypointAt, undo, _addWaypointRaw, replaceWaypoints } from './waypoints.js';
 import { makeLocationIcon, refreshAllIcons } from './icons.js';
-import { buildRouteParams, currentLonlats, scheduleRoute, renderRoute, stitchLegs, getProfileOverrides, clearRenderedRouteOnly } from './route.js';
+import { buildRouteParams, currentLonlats, scheduleRoute, renderRoute, stitchLegs, getProfileOverrides, clearRenderedRouteOnly, getRouteContextInsertion } from './route.js';
 import { renderChart, clearElevationProfile, initElevModeButtons } from './elevation.js';
 import { initGeocoder } from './geocoder.js';
 import { setStatus, saveRoute, clearSavedRoute, storageKey } from './utils.js';
@@ -64,6 +64,101 @@ state.map.on('dblclick', () => {
   if (state.clickTimer) { clearTimeout(state.clickTimer); state.clickTimer = null; }
 });
 
+const ctxMenu = document.getElementById('context-menu');
+
+function hideContextMenu() {
+  ctxMenu.style.display = 'none';
+  ctxMenu.innerHTML = '';
+}
+
+async function copyCoords(lat, lon) {
+  const txt = `${lat.toFixed(6)}, ${lon.toFixed(6)}`;
+  try {
+    await navigator.clipboard.writeText(txt);
+    setStatus(`Copied coordinates: ${txt}`, 'ok');
+  } catch {
+    setStatus('Could not copy coordinates to clipboard.', 'error');
+  }
+}
+
+function showContextMenu(clientX, clientY, items) {
+  ctxMenu.innerHTML = '';
+  for (const item of items) {
+    const btn = document.createElement('button');
+    btn.className = 'ctx-menu-item';
+    btn.textContent = item.label;
+    btn.addEventListener('click', async () => {
+      hideContextMenu();
+      await item.action();
+    });
+    ctxMenu.appendChild(btn);
+  }
+  ctxMenu.style.display = 'block';
+  ctxMenu.style.left = `${clientX}px`;
+  ctxMenu.style.top = `${clientY}px`;
+}
+
+document.addEventListener('click', hideContextMenu);
+document.addEventListener('keydown', e => { if (e.key === 'Escape') hideContextMenu(); });
+
+state.map.on('contextmenu', e => {
+  const { lat, lng } = e.latlng;
+  const insert = state.routeGeom ? getRouteContextInsertion(lat, lng) : null;
+  const pixel = state.map.latLngToContainerPoint([lat, lng]);
+
+  let nearWpIdx = -1;
+  for (let i = 0; i < state.waypoints.length; i++) {
+    const wpPx = state.map.latLngToContainerPoint([state.waypoints[i].lat, state.waypoints[i].lon]);
+    const dx = wpPx.x - pixel.x;
+    const dy = wpPx.y - pixel.y;
+    if (dx * dx + dy * dy < 13 * 13) {
+      nearWpIdx = i;
+      break;
+    }
+  }
+
+  const onRoute = !!insert && (() => {
+    const routePx = state.map.latLngToContainerPoint([insert.snapLat, insert.snapLon]);
+    const dx = routePx.x - pixel.x;
+    const dy = routePx.y - pixel.y;
+    return dx * dx + dy * dy < 14 * 14;
+  })();
+
+  let menuLat = lat;
+  let menuLon = lng;
+  const items = [];
+
+  if (nearWpIdx >= 0) {
+    menuLat = state.waypoints[nearWpIdx].lat;
+    menuLon = state.waypoints[nearWpIdx].lon;
+    items.push({ label: 'Delete waypoint', action: () => removeWaypoint(nearWpIdx) });
+    items.push({ label: 'Copy coordinates', action: () => copyCoords(menuLat, menuLon) });
+  } else if (onRoute && insert) {
+    menuLat = insert.snapLat;
+    menuLon = insert.snapLon;
+    items.push({ label: 'Insert waypoint here', action: () => insertWaypointAt(insert.insertIdx, insert.snapLat, insert.snapLon) });
+    items.push({ label: 'Copy coordinates', action: () => copyCoords(menuLat, menuLon) });
+  } else {
+    items.push({ label: 'Append waypoint here', action: () => addWaypoint(lat, lng) });
+    items.push({ label: 'Copy coordinates', action: () => copyCoords(lat, lng) });
+  }
+
+  L.DomEvent.stopPropagation(e.originalEvent);
+  L.DomEvent.preventDefault(e.originalEvent);
+  showContextMenu(e.originalEvent.clientX, e.originalEvent.clientY, items);
+});
+
+document.addEventListener('waypoint-contextmenu', e => {
+  const d = e.detail;
+  if (!d) return;
+  const p = state.map.latLngToContainerPoint([d.lat, d.lon]);
+  const mapRect = state.map.getContainer().getBoundingClientRect();
+  showContextMenu(mapRect.left + p.x, mapRect.top + p.y, [
+    { label: 'Delete waypoint', action: () => removeWaypoint(d.idx) },
+    { label: 'Copy coordinates', action: () => copyCoords(d.lat, d.lon) },
+  ]);
+});
+
 // ── Waypoint control buttons ───────────────────────────────────────────────
 
 document.getElementById('btn-add-waypoint').addEventListener('click', () => {
@@ -74,7 +169,12 @@ document.getElementById('btn-add-waypoint').addEventListener('click', () => {
 });
 
 document.getElementById('btn-reverse').addEventListener('click', reverseWaypoints);
+document.getElementById('btn-close-loop').addEventListener('click', closeLoop);
 document.getElementById('btn-clear-all').addEventListener('click', clearAllWaypoints);
+document.getElementById('btn-toggle-waypoints').addEventListener('click', () => {
+  state.wpListVisible = !state.wpListVisible;
+  renderWaypointList();
+});
 
 // Event delegation for remove button in waypoint list
 document.getElementById('waypoint-list').addEventListener('click', e => {
