@@ -7,6 +7,8 @@ export const state = {
   undoStack:         [],     // array of snapshots (max 50)
   addingMode:        false,
   routeLayer:        null,
+  routeInfoLayer:    null,   // direction + distance indicators
+  routeInfoHandler:  null,   // zoom listener for dynamic marker spacing
   routeHitLayer:     null,   // transparent wide polyline for hover/click
   routeGeom:         null,   // dense [{ lat, lon, cumDist }] from geometry coords
   routeWpSegs:       null,   // routeGeom index of each waypoint (for insertion)

@@ -116,6 +116,11 @@ export function clearAllWaypoints() {
   state.wpListExpanded = false;
   renderWaypointList();
   if (state.routeLayer)    { state.map.removeLayer(state.routeLayer);    state.routeLayer    = null; }
+  if (state.routeInfoLayer){ state.map.removeLayer(state.routeInfoLayer); state.routeInfoLayer = null; }
+  if (state.routeInfoHandler) {
+    state.map.off('zoomend', state.routeInfoHandler);
+    state.routeInfoHandler = null;
+  }
   if (state.routeHitLayer) { state.map.removeLayer(state.routeHitLayer); state.routeHitLayer = null; }
   state.routeGeom = null; state.routeWpSegs = null;
   removeSelectionOverlay();

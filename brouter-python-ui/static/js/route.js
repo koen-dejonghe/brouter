@@ -24,6 +24,105 @@ function isParamChanged(input) {
   return String(input.value) !== String(input.dataset.default);
 }
 
+function headingDeg(a, b) {
+  const dLat = (b[0] - a[0]) * 111320;
+  const dLon = (b[1] - a[1]) * 111320 * Math.cos((a[0] + b[0]) / 2 * Math.PI / 180);
+  if (dLat === 0 && dLon === 0) return 0;
+  return Math.atan2(dLon, dLat) * 180 / Math.PI;
+}
+
+function pointAtDistance(routeGeom, targetDist) {
+  if (!routeGeom || !routeGeom.length) return null;
+  if (targetDist <= 0) return routeGeom[0];
+  const last = routeGeom[routeGeom.length - 1];
+  if (targetDist >= last.cumDist) return last;
+
+  let lo = 0, hi = routeGeom.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (routeGeom[mid].cumDist < targetDist) lo = mid + 1;
+    else hi = mid;
+  }
+  const i = Math.max(1, lo);
+  const a = routeGeom[i - 1], b = routeGeom[i];
+  const span = b.cumDist - a.cumDist;
+  const t = span > 0 ? (targetDist - a.cumDist) / span : 0;
+  return {
+    lat: a.lat + (b.lat - a.lat) * t,
+    lon: a.lon + (b.lon - a.lon) * t,
+    cumDist: targetDist,
+    heading: headingDeg([a.lat, a.lon], [b.lat, b.lon]),
+  };
+}
+
+function metersPerPixelAt(lat, zoom) {
+  return (156543.03392 * Math.cos(lat * Math.PI / 180)) / Math.pow(2, zoom);
+}
+
+function dynamicSteps(routeGeom) {
+  if (!routeGeom || routeGeom.length < 2) return { markerStep: 1000, distanceStep: 1000 };
+  const total = routeGeom[routeGeom.length - 1].cumDist;
+  const mid = routeGeom[(routeGeom.length / 2) | 0];
+  const zoom = state.map.getZoom();
+  const mpp = metersPerPixelAt(mid.lat, zoom);
+
+  const targetPx = 120;
+  const rawStep = Math.max(1000, mpp * targetPx);
+  const options = [1000, 2000, 3000, 5000, 7500, 10000, 15000, 20000, 30000, 50000];
+  let markerStep = options[options.length - 1];
+  for (const v of options) {
+    if (v >= rawStep) { markerStep = v; break; }
+  }
+  if (total < markerStep * 1.8) markerStep = Math.max(1000, Math.floor(total / 3));
+
+  const distanceStep = Math.max(1000, markerStep * 2);
+  return { markerStep: Math.max(1000, markerStep), distanceStep };
+}
+
+function buildRouteInfoMarkers(routeGeom) {
+  if (!routeGeom || routeGeom.length < 2) return null;
+  const total = routeGeom[routeGeom.length - 1].cumDist;
+  if (total < 1500) return null;
+
+  const layer = L.layerGroup();
+
+  const { markerStep, distanceStep } = dynamicSteps(routeGeom);
+
+  let markerCount = 0;
+  for (let d = markerStep, n = 1; d < total && markerCount < 120; d += markerStep, n += 1) {
+    const p = pointAtDistance(routeGeom, d);
+    if (!p) continue;
+    const isDistance = Math.round(d) % Math.round(distanceStep) === 0;
+    if (isDistance) {
+      const label = `${Math.round(d / 1000)}`;
+      layer.addLayer(L.marker([p.lat, p.lon], {
+        icon: L.divIcon({
+          className: 'route-dist-icon',
+          html: `<div class="route-dist-pill">${label}</div>`,
+          iconSize: [38, 32],
+          iconAnchor: [19, 30],
+        }),
+        interactive: false,
+        keyboard: false,
+      }));
+    } else {
+      layer.addLayer(L.marker([p.lat, p.lon], {
+        icon: L.divIcon({
+          className: 'route-dir-icon',
+          html: `<div class="route-dir-arrow" style="transform: rotate(${p.heading}deg)">▲</div>`,
+          iconSize: [14, 14],
+          iconAnchor: [7, 7],
+        }),
+        interactive: false,
+        keyboard: false,
+      }));
+    }
+    markerCount += 1;
+  }
+
+  return layer;
+}
+
 // ── Route query building ───────────────────────────────────────────────────
 
 export function buildRouteParams(lonlats, fmt) {
@@ -102,6 +201,11 @@ export function stitchLegs(legs) {
 
 export function renderRoute(data, fitBounds) {
   if (state.routeLayer)    { state.map.removeLayer(state.routeLayer);    state.routeLayer    = null; }
+  if (state.routeInfoLayer){ state.map.removeLayer(state.routeInfoLayer); state.routeInfoLayer = null; }
+  if (state.routeInfoHandler) {
+    state.map.off('zoomend', state.routeInfoHandler);
+    state.routeInfoHandler = null;
+  }
   if (state.routeHitLayer) { state.map.removeLayer(state.routeHitLayer); state.routeHitLayer = null; }
 
   const segments   = buildSurfaceLines(data);
@@ -158,6 +262,22 @@ export function renderRoute(data, fitBounds) {
     state.routeHitLayer.on('mousedown', onRouteMouseDown);
   }
 
+  if (state.routeGeom && state.routeGeom.length >= 2) {
+    const info = buildRouteInfoMarkers(state.routeGeom);
+    if (info) {
+      state.routeInfoLayer = info;
+      state.routeInfoLayer.addTo(state.map);
+
+      state.routeInfoHandler = () => {
+        if (!state.routeGeom) return;
+        if (state.routeInfoLayer) state.map.removeLayer(state.routeInfoLayer);
+        state.routeInfoLayer = buildRouteInfoMarkers(state.routeGeom);
+        if (state.routeInfoLayer) state.routeInfoLayer.addTo(state.map);
+      };
+      state.map.on('zoomend', state.routeInfoHandler);
+    }
+  }
+
   if (fitBounds && allLatLngs.length) {
     const bounds = L.latLngBounds(allLatLngs);
     state.map.whenReady(() => state.map.fitBounds(bounds, { padding: [30, 30] }));
@@ -171,6 +291,11 @@ export function renderRoute(data, fitBounds) {
 export function clearRenderedRouteOnly() {
   if (state.routeTimer) { clearTimeout(state.routeTimer); state.routeTimer = null; }
   if (state.routeLayer)    { state.map.removeLayer(state.routeLayer);    state.routeLayer    = null; }
+  if (state.routeInfoLayer){ state.map.removeLayer(state.routeInfoLayer); state.routeInfoLayer = null; }
+  if (state.routeInfoHandler) {
+    state.map.off('zoomend', state.routeInfoHandler);
+    state.routeInfoHandler = null;
+  }
   if (state.routeHitLayer) { state.map.removeLayer(state.routeHitLayer); state.routeHitLayer = null; }
   state.routeGeom = null;
   state.routeWpSegs = null;

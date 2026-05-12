@@ -48,3 +48,65 @@
 #map { flex: 1; min-height: 0; }
 
 .picking-cursor { cursor: crosshair !important; }
+
+.route-dir-icon,
+.route-dist-icon {
+  background: transparent;
+  border: none;
+}
+
+.route-dir-arrow {
+  width: 14px;
+  height: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  line-height: 1;
+  color: #ffffff;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  text-shadow: 0 1px 3px rgba(15, 23, 42, 0.95), 0 0 2px rgba(15, 23, 42, 0.9);
+}
+
+.route-dist-pill {
+  min-width: 24px;
+  text-align: center;
+  padding: 1px 4px;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.25;
+  color: #0f172a;
+  background: rgba(255, 255, 255, 0.97);
+  border: 1px solid #475569;
+  border-radius: 4px;
+  position: relative;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.22);
+}
+
+.route-dist-pill::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: -5px;
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid #475569;
+}
+
+.route-dist-pill::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: -4px;
+  width: 0;
+  height: 0;
+  border-left: 3px solid transparent;
+  border-right: 3px solid transparent;
+  border-top: 4px solid rgba(255, 255, 255, 0.97);
+}
