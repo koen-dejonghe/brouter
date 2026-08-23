@@ -20,7 +20,10 @@ export function initGeocoder() {
     dropdown.innerHTML = '';
 
     if (!features.length) {
-      dropdown.innerHTML = '<div class="search-none">No results found.</div>';
+      const none = document.createElement('div');
+      none.className = 'search-none';
+      none.textContent = 'No results found.';
+      dropdown.appendChild(none);
       openDropdown();
       return;
     }
@@ -33,7 +36,15 @@ export function initGeocoder() {
 
       const item = document.createElement('div');
       item.className = 'search-item';
-      item.innerHTML = `<div>${name}</div>${sub ? `<div class="search-item-sub">${sub}</div>` : ''}`;
+      const title = document.createElement('div');
+      title.textContent = name;
+      item.appendChild(title);
+      if (sub) {
+        const detail = document.createElement('div');
+        detail.className = 'search-item-sub';
+        detail.textContent = sub;
+        item.appendChild(detail);
+      }
       item.addEventListener('mousedown', e => {
         e.preventDefault();
         selectResult(i);
@@ -67,7 +78,10 @@ export function initGeocoder() {
       .setContent(() => {
         const div = document.createElement('div');
         div.style.cssText = 'font-size:0.82rem; color:#1e293b; min-width:160px;';
-        div.innerHTML = `<strong style="display:block;margin-bottom:6px;">${name}</strong>`;
+        const title = document.createElement('strong');
+        title.style.cssText = 'display:block;margin-bottom:6px;';
+        title.textContent = name;
+        div.appendChild(title);
         const btn = document.createElement('button');
         btn.className   = 'popup-add-btn';
         btn.textContent = '+ Add as waypoint';

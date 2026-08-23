@@ -25,6 +25,11 @@ state.map.on('locationerror', () => { /* keep default view on error */ });
 
 initControls();
 
+if (!(state.poiStore instanceof Map)) state.poiStore = new Map();
+if (!(state.poiTypes instanceof Set)) state.poiTypes = new Set(['water', 'food', 'shelter']);
+if (!Array.isArray(state.selectedPois)) state.selectedPois = [];
+if (typeof state.poiEnabled !== 'boolean') state.poiEnabled = false;
+
 // ── Location marker (updated on every locate) ────────────────────────────
 
 state.map.on('locationfound', e => {
@@ -57,7 +62,12 @@ state.map.on('click', e => {
   state.clickTimer = setTimeout(() => {
     state.clickTimer = null;
     addWaypoint(lat, lng);
+    updateAddPreview(e.latlng);
   }, 250);
+});
+
+state.map.on('mousemove', e => {
+  updateAddPreview(e.latlng);
 });
 
 state.map.on('dblclick', () => {
@@ -69,6 +79,96 @@ const ctxMenu = document.getElementById('context-menu');
 function hideContextMenu() {
   ctxMenu.style.display = 'none';
   ctxMenu.innerHTML = '';
+}
+
+function clearAddPreview() {
+  if (state.addPreviewLine) {
+    state.map.removeLayer(state.addPreviewLine);
+    state.addPreviewLine = null;
+  }
+  if (state.addPreviewLabel) {
+    state.map.removeLayer(state.addPreviewLabel);
+    state.addPreviewLabel = null;
+  }
+}
+
+function clipLineToViewport(startPx, endPx, size) {
+  const dx = endPx.x - startPx.x;
+  const dy = endPx.y - startPx.y;
+  const p = [-dx, dx, -dy, dy];
+  const q = [startPx.x, size.x - startPx.x, startPx.y, size.y - startPx.y];
+  let t0 = 0;
+  let t1 = 1;
+
+  for (let i = 0; i < 4; i++) {
+    if (p[i] === 0) {
+      if (q[i] < 0) return null;
+      continue;
+    }
+    const r = q[i] / p[i];
+    if (p[i] < 0) t0 = Math.max(t0, r);
+    else t1 = Math.min(t1, r);
+    if (t0 > t1) return null;
+  }
+
+  return [
+    L.point(startPx.x + t0 * dx, startPx.y + t0 * dy),
+    L.point(startPx.x + t1 * dx, startPx.y + t1 * dy),
+  ];
+}
+
+function updateAddPreview(latlng) {
+  if (!state.addingMode || state.waypoints.length === 0) {
+    clearAddPreview();
+    return;
+  }
+  const last = state.waypoints[state.waypoints.length - 1];
+  const start = L.latLng(last.lat, last.lon);
+  const end = L.latLng(latlng.lat, latlng.lng);
+  const distanceKm = (start.distanceTo(end) / 1000).toFixed(1);
+
+  const size = state.map.getSize();
+  const startPx = state.map.latLngToContainerPoint(start);
+  const endPx = state.map.latLngToContainerPoint(end);
+  const clipped = clipLineToViewport(startPx, endPx, size);
+
+  let labelLatLng;
+  if (clipped) {
+    const midVisiblePx = L.point((clipped[0].x + clipped[1].x) / 2, (clipped[0].y + clipped[1].y) / 2);
+    labelLatLng = state.map.containerPointToLatLng(midVisiblePx);
+  } else {
+    const midPx = L.point((startPx.x + endPx.x) / 2, (startPx.y + endPx.y) / 2);
+    const clampedPx = L.point(
+      Math.max(16, Math.min(size.x - 16, midPx.x)),
+      Math.max(16, Math.min(size.y - 16, midPx.y)),
+    );
+    labelLatLng = state.map.containerPointToLatLng(clampedPx);
+  }
+
+  if (!state.addPreviewLine) {
+    state.addPreviewLine = L.polyline([start, end], {
+      color: '#0f172a',
+      weight: 2,
+      opacity: 0.85,
+      dashArray: '6, 6',
+      interactive: false,
+    }).addTo(state.map);
+  } else {
+    state.addPreviewLine.setLatLngs([start, end]);
+  }
+
+  const labelHtml = `<div class="add-preview-label">${distanceKm} km</div>`;
+  if (!state.addPreviewLabel) {
+    state.addPreviewLabel = L.marker(labelLatLng, {
+      icon: L.divIcon({ className: 'add-preview-icon', html: labelHtml, iconSize: null }),
+      interactive: false,
+      keyboard: false,
+      zIndexOffset: 900,
+    }).addTo(state.map);
+  } else {
+    state.addPreviewLabel.setLatLng(labelLatLng);
+    state.addPreviewLabel.setIcon(L.divIcon({ className: 'add-preview-icon', html: labelHtml, iconSize: null }));
+  }
 }
 
 async function copyCoords(lat, lon) {
@@ -96,6 +196,210 @@ function showContextMenu(clientX, clientY, items) {
   ctxMenu.style.display = 'block';
   ctxMenu.style.left = `${clientX}px`;
   ctxMenu.style.top = `${clientY}px`;
+}
+
+function updatePoiMarkedHint() {
+  const el = document.getElementById('poi-marked');
+  if (!el) return;
+  el.textContent = `Marked POIs: ${state.selectedPois.length}`;
+}
+
+function poiIcon(category) {
+  const cls = category === 'food' ? 'poi-food' : category === 'shelter' ? 'poi-shelter' : 'poi-water';
+  return L.divIcon({
+    className: 'poi-icon',
+    html: `<div class="poi-pin ${cls}"></div>`,
+    iconSize: [12, 12],
+    iconAnchor: [6, 6],
+  });
+}
+
+function isPoiMarked(poi) {
+  return state.selectedPois.some(p => p.id === poi.id);
+}
+
+function toggleMarkPoi(poi) {
+  const idx = state.selectedPois.findIndex(p => p.id === poi.id);
+  if (idx >= 0) state.selectedPois.splice(idx, 1);
+  else state.selectedPois.push({
+    id: poi.id,
+    name: poi.name,
+    category: poi.category,
+    lat: poi.lat,
+    lon: poi.lon,
+  });
+  updatePoiMarkedHint();
+}
+
+function bindPoiPopup(marker, poi) {
+  const marked = isPoiMarked(poi);
+  const markLabel = marked ? 'Unmark for GPX' : 'Mark for GPX';
+  const root = document.createElement('div');
+  const title = document.createElement('div');
+  title.className = 'poi-popup-title';
+  title.textContent = poi.name;
+  root.appendChild(title);
+  const meta = document.createElement('div');
+  meta.className = 'poi-popup-meta';
+  meta.textContent = poi.category;
+  root.appendChild(meta);
+  const makeButton = (action, label) => {
+    const button = document.createElement('button');
+    button.className = 'poi-popup-btn';
+    button.dataset.action = action;
+    button.textContent = label;
+    root.appendChild(button);
+    return button;
+  };
+  const markBtn = makeButton('mark', markLabel);
+  const copyBtn = makeButton('copy', 'Copy coords');
+  const addWpBtn = makeButton('add-waypoint', 'Add as waypoint');
+  markBtn.addEventListener('click', () => {
+      toggleMarkPoi(poi);
+      marker.closePopup();
+    });
+  copyBtn.addEventListener('click', () => {
+      copyCoords(poi.lat, poi.lon);
+      marker.closePopup();
+    });
+  addWpBtn.addEventListener('click', () => {
+      if (!isPoiMarked(poi)) toggleMarkPoi(poi);
+      addWaypoint(poi.lat, poi.lon);
+      marker.closePopup();
+    });
+  marker.bindPopup(root);
+}
+
+function clearPoiLayer() {
+  if (!state.poiLayer) return;
+  state.map.removeLayer(state.poiLayer);
+  state.poiLayer = null;
+}
+
+function normalizePoiFeature(f) {
+  const coords = f?.geometry?.coordinates;
+  if (!coords || coords.length < 2) return null;
+  return {
+    id: f.properties?.id || f.id,
+    name: f.properties?.name || 'POI',
+    category: f.properties?.category || 'water',
+    lon: Number(coords[0]),
+    lat: Number(coords[1]),
+  };
+}
+
+function updatePoiStore(fc) {
+  for (const f of (fc?.features || [])) {
+    const poi = normalizePoiFeature(f);
+    if (!poi?.id || !Number.isFinite(poi.lat) || !Number.isFinite(poi.lon)) continue;
+    state.poiStore.set(poi.id, poi);
+  }
+}
+
+function renderPoisFromStore() {
+  clearPoiLayer();
+  state.poiLayer = L.layerGroup();
+  for (const poi of state.poiStore.values()) {
+    const m = L.marker([poi.lat, poi.lon], { icon: poiIcon(poi.category) });
+    bindPoiPopup(m, poi);
+    state.poiLayer.addLayer(m);
+  }
+  state.poiLayer.addTo(state.map);
+}
+
+async function fetchPoisNow() {
+  if (!state.poiEnabled) {
+    clearPoiLayer();
+    return;
+  }
+  const bounds = state.map.getBounds();
+  const zoom = state.map.getZoom();
+  const types = [...state.poiTypes].join(',');
+  const statusEl = document.getElementById('poi-status');
+  if (statusEl) statusEl.textContent = 'Loading POIs…';
+  try {
+    const bbox = [bounds.getSouth(), bounds.getWest(), bounds.getNorth(), bounds.getEast()].join(',');
+    const resp = await fetch(`/pois?bbox=${encodeURIComponent(bbox)}&zoom=${zoom}&types=${encodeURIComponent(types)}`);
+    const payload = await resp.json();
+    if (!resp.ok) throw new Error(payload.error || 'POI request failed');
+    if (payload.zoom_blocked) {
+      clearPoiLayer();
+      state.poiStore.clear();
+      if (statusEl) statusEl.textContent = `Zoom in to at least z${payload.min_zoom} to show POIs.`;
+      return;
+    }
+    updatePoiStore(payload);
+    renderPoisFromStore();
+    if (statusEl) statusEl.textContent = `POIs visible: ${state.poiStore.size}`;
+  } catch (e) {
+    if (statusEl) statusEl.textContent = `POI load failed: ${e.message}`;
+  }
+}
+
+function schedulePoiFetch() {
+  if (state.poiFetchTimer) clearTimeout(state.poiFetchTimer);
+  state.poiFetchTimer = setTimeout(fetchPoisNow, 220);
+}
+
+const POI_PREFS_KEY = 'brouter-poi-prefs';
+
+function loadPoiPrefs() {
+  try {
+    const raw = localStorage.getItem(POI_PREFS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function savePoiPrefs() {
+  try {
+    localStorage.setItem(POI_PREFS_KEY, JSON.stringify({
+      enabled: !!state.poiEnabled,
+      types: [...state.poiTypes],
+    }));
+  } catch {
+    // ignore localStorage errors (quota/privacy mode)
+  }
+}
+
+function initPois() {
+  const prefs = loadPoiPrefs();
+  const enabledEl = document.getElementById('poi-enabled');
+  if (enabledEl && typeof prefs.enabled === 'boolean') enabledEl.checked = prefs.enabled;
+  state.poiEnabled = !!enabledEl?.checked;
+  enabledEl?.addEventListener('change', e => {
+    state.poiEnabled = e.target.checked;
+    savePoiPrefs();
+    schedulePoiFetch();
+  });
+
+  if (!(state.poiTypes instanceof Set)) state.poiTypes = new Set();
+  else state.poiTypes.clear();
+  const hasTypePrefs = Array.isArray(prefs.types);
+  const prefTypes = hasTypePrefs ? new Set(prefs.types) : null;
+  const wireType = (id, t) => {
+    const el = document.getElementById(id);
+    if (el && hasTypePrefs) el.checked = prefTypes.has(t);
+    if (el?.checked) state.poiTypes.add(t);
+    el?.addEventListener('change', e => {
+      if (e.target.checked) state.poiTypes.add(t);
+      else state.poiTypes.delete(t);
+      savePoiPrefs();
+      schedulePoiFetch();
+    });
+  };
+  wireType('poi-water', 'water');
+  wireType('poi-food', 'food');
+  wireType('poi-shelter', 'shelter');
+  savePoiPrefs();
+
+  state.map.on('moveend', schedulePoiFetch);
+  state.map.on('zoomend', schedulePoiFetch);
+  updatePoiMarkedHint();
+  schedulePoiFetch();
 }
 
 document.addEventListener('click', hideContextMenu);
@@ -165,6 +469,7 @@ document.getElementById('btn-add-waypoint').addEventListener('click', () => {
   state.addingMode = !state.addingMode;
   document.getElementById('btn-add-waypoint').classList.toggle('active', state.addingMode);
   state.map.getContainer().classList.toggle('picking-cursor', state.addingMode);
+  if (!state.addingMode) clearAddPreview();
   setStatus(state.addingMode ? 'Click on the map to add waypoints. Press Esc to stop.' : '', state.addingMode ? 'info' : '');
 });
 
@@ -190,6 +495,7 @@ document.addEventListener('keydown', e => {
     state.addingMode = false;
     document.getElementById('btn-add-waypoint').classList.remove('active');
     state.map.getContainer().classList.remove('picking-cursor');
+    clearAddPreview();
     setStatus('', '');
   }
   if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
@@ -230,13 +536,18 @@ function updateChangedBadge() {
 
 async function loadProfileParams(profile) {
   const body = document.getElementById('profile-settings-body');
-  body.innerHTML = '<div id="params-loading">Loading…</div>';
+  body.replaceChildren();
+  const loading = document.createElement('div');
+  loading.id = 'params-loading';
+  loading.textContent = 'Loading…';
+  body.appendChild(loading);
   updateChangedBadge();
   try {
     const resp = await fetch(`/profile-params/${encodeURIComponent(profile)}`);
     state.profileParams = await resp.json();
   } catch {
-    body.innerHTML = '<div id="params-loading" style="color:#fca5a5">Failed to load params.</div>';
+    loading.style.color = '#fca5a5';
+    loading.textContent = 'Failed to load params.';
     return;
   }
   renderProfileParams(profile);
@@ -245,49 +556,68 @@ async function loadProfileParams(profile) {
 function renderProfileParams(profile) {
   const body = document.getElementById('profile-settings-body');
   if (!state.profileParams.length) {
-    body.innerHTML = '<div id="params-loading">No configurable parameters.</div>';
+    body.replaceChildren();
+    const empty = document.createElement('div');
+    empty.id = 'params-loading';
+    empty.textContent = 'No configurable parameters.';
+    body.appendChild(empty);
     return;
   }
   const saved = loadedOverrides(profile);
-  body.innerHTML = '';
+  body.replaceChildren();
   for (const p of state.profileParams) {
     const row = document.createElement('div');
     const savedVal = saved[p.name];
+    const inputId = `profile-param-${body.children.length}`;
+    const label = document.createElement('label');
+    label.htmlFor = inputId;
+    label.textContent = p.name;
+    const addDescription = () => {
+      const desc = document.createElement('div');
+      desc.className = 'param-desc';
+      desc.textContent = p.description;
+      row.appendChild(desc);
+    };
+    let input;
     if (p.kind === 'boolean') {
       const checked = savedVal !== undefined ? savedVal : p.default;
       row.className = 'param-row bool-row';
-      row.innerHTML = `
-        <label for="param-${p.name}" title="${p.description}">${p.name}</label>
-        <input type="checkbox" id="param-${p.name}" data-param="${p.name}" data-default="${p.default}"
-          ${checked ? 'checked' : ''} />`;
+      label.title = p.description;
+      input = document.createElement('input');
+      input.type = 'checkbox';
+      input.checked = !!checked;
     } else if (p.kind === 'number') {
       const val = savedVal !== undefined ? savedVal : p.default;
       row.className = 'param-row';
-      row.innerHTML = `
-        <label for="param-${p.name}">${p.name}</label>
-        <div class="param-desc">${p.description}</div>
-        <input type="number" id="param-${p.name}" data-param="${p.name}" data-default="${p.default}"
-          value="${val}" step="any" />`;
+      input = document.createElement('input');
+      input.type = 'number';
+      input.step = 'any';
+      input.value = val;
     } else if (p.kind === 'enum') {
       const val = savedVal !== undefined ? savedVal : p.default;
-      const opts = p.options.map(o =>
-        `<option value="${o.value}" ${String(o.value) === String(val) ? 'selected' : ''}>${o.value} — ${o.label}</option>`
-      ).join('');
       row.className = 'param-row';
-      row.innerHTML = `
-        <label for="param-${p.name}">${p.name}</label>
-        <div class="param-desc">${p.description}</div>
-        <select id="param-${p.name}" data-param="${p.name}" data-default="${p.default}">${opts}</select>`;
+      input = document.createElement('select');
+      for (const o of p.options) {
+        const option = document.createElement('option');
+        option.value = o.value;
+        option.textContent = `${o.value} — ${o.label}`;
+        option.selected = String(o.value) === String(val);
+        input.appendChild(option);
+      }
     } else {
       const val = savedVal !== undefined ? savedVal : p.default;
       row.className = 'param-row';
-      row.innerHTML = `
-        <label for="param-${p.name}">${p.name}</label>
-        <input type="text" id="param-${p.name}" data-param="${p.name}" data-default="${p.default}"
-          value="${val}" />`;
+      input = document.createElement('input');
+      input.type = 'text';
+      input.value = val;
     }
+    input.id = inputId;
+    input.dataset.param = p.name;
+    input.dataset.default = p.default;
+    row.appendChild(label);
+    if (p.kind === 'number' || p.kind === 'enum') addDescription();
+    row.appendChild(input);
     body.appendChild(row);
-    const input = row.querySelector('[data-param]');
     if (isChanged(input)) row.classList.add('param-changed');
     input.addEventListener('change', () => {
       row.classList.toggle('param-changed', isChanged(input));
@@ -512,6 +842,7 @@ document.getElementById('btn-download').addEventListener('click', () => {
   const trackname = document.getElementById('trackname').value.trim() || defaultTrackName();
   const qs = buildRouteParams(currentLonlats(), fmt);
   qs.set('trackname', trackname);
+  if (fmt === 'gpx' && state.selectedPois.length) qs.set('selected_pois', JSON.stringify(state.selectedPois));
   window.location.href = `/download?${qs}`;
 });
 
@@ -543,6 +874,7 @@ window.addEventListener('resize', () => { if (state.elevData) renderChart(); });
 
 initGeocoder();
 initGpxImport();
+initPois();
 
 // ── Restore saved route ────────────────────────────────────────────────────
 

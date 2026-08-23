@@ -1,19 +1,85 @@
-from flask import Flask, render_template, request, jsonify, Response
-import requests
+import json
+import logging
+import os
 import re
+import time
+from collections import defaultdict, deque
+from math import atan2, cos, isfinite, pi, sqrt
 from pathlib import Path
-from math import atan2, cos, pi, sqrt
+from threading import Lock
+from xml.sax.saxutils import escape as xml_escape
+
+import requests
+from flask import Flask, Response, jsonify, render_template, request
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 
-BROUTER_URL = "http://localhost:17777/brouter"
-OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+BROUTER_URL = os.getenv("BROUTER_URL", "http://localhost:17777/brouter")
+OVERPASS_URL = os.getenv("OVERPASS_URL", "https://overpass-api.de/api/interpreter")
 OVERPASS_FALLBACKS = [
     OVERPASS_URL,
-    "https://lz4.overpass-api.de/api/interpreter",
-    "https://overpass.kumi.systems/api/interpreter",
+    *[
+        url.strip()
+        for url in os.getenv(
+            "OVERPASS_FALLBACK_URLS",
+            "https://lz4.overpass-api.de/api/interpreter,https://overpass.kumi.systems/api/interpreter",
+        ).split(",")
+        if url.strip() and url.strip() != OVERPASS_URL
+    ],
 ]
-PROFILES_DIR = Path(__file__).parent.parent / "misc" / "profiles2"
+PROFILES_DIR = Path(
+    os.getenv(
+        "BROUTER_PROFILES_DIR",
+        str(Path(__file__).parent.parent / "misc" / "profiles2"),
+    )
+)
+POI_CACHE_TTL_S = int(os.getenv("POI_CACHE_TTL_S", "120"))
+POI_CACHE_MAX = int(os.getenv("POI_CACHE_MAX", "120"))
+POI_MIN_ZOOM = int(os.getenv("POI_MIN_ZOOM", "12"))
+BROUTER_TIMEOUT_S = float(os.getenv("BROUTER_TIMEOUT_S", "60"))
+OVERPASS_TIMEOUT_S = float(os.getenv("OVERPASS_TIMEOUT_S", "35"))
+MAX_ROUTE_POINTS = int(os.getenv("MAX_ROUTE_POINTS", "100"))
+MAX_ENRICH_POINTS = int(os.getenv("MAX_ENRICH_POINTS", "10000"))
+MAX_BBOX_SPAN_DEG = float(os.getenv("MAX_BBOX_SPAN_DEG", "2"))
+MAX_TRACK_NAME_LEN = int(os.getenv("MAX_TRACK_NAME_LEN", "100"))
+RATE_LIMIT_WINDOW_S = int(os.getenv("RATE_LIMIT_WINDOW_S", "60"))
+RATE_LIMIT_REQUESTS = int(os.getenv("RATE_LIMIT_REQUESTS", "30"))
+app.config["MAX_CONTENT_LENGTH"] = int(os.getenv("MAX_CONTENT_LENGTH", "2097152"))
+_POI_CACHE: dict[str, tuple[float, dict]] = {}
+_POI_CACHE_LOCK = Lock()
+_RATE_BUCKETS: dict[str, deque[float]] = defaultdict(deque)
+_RATE_LOCK = Lock()
+
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+logger = logging.getLogger(__name__)
+
+HTTP = requests.Session()
+HTTP.headers.update({"User-Agent": "brouter-python-ui/1.0", "Accept": "application/json"})
+HTTP.mount(
+    "https://",
+    HTTPAdapter(
+        max_retries=Retry(
+            total=1,
+            connect=1,
+            read=0,
+            status=1,
+            backoff_factor=0.2,
+            status_forcelist=(429, 502, 503, 504),
+            allowed_methods=frozenset({"GET"}),
+        )
+    ),
+)
+
+PROFILE_OVERRIDE_RE = re.compile(r"^profile:[A-Za-z_][A-Za-z0-9_]{0,63}$")
+DOWNLOAD_FORMATS = {
+    "gpx": ("application/gpx+xml", "gpx"),
+    "kml": ("application/vnd.google-earth.kml+xml", "kml"),
+    "geojson": ("application/geo+json", "geojson"),
+    "csv": ("text/tab-separated-values", "csv"),
+}
 
 PROFILES = [
     "trekking",
@@ -106,13 +172,263 @@ def parse_profile_params(profile: str) -> list[dict]:
     return params
 
 
-def collect_profile_overrides(args) -> dict:
+def collect_profile_overrides(args, profile: str) -> dict:
     """Extract profile:varname=value overrides from request args."""
+    allowed = {param["name"] for param in parse_profile_params(profile)}
     overrides = {}
     for key, value in args.items():
-        if key.startswith("profile:"):
+        name = key.removeprefix("profile:")
+        if PROFILE_OVERRIDE_RE.fullmatch(key) and name in allowed and len(value) <= 128:
             overrides[key] = value
     return overrides
+
+
+def parse_lonlats(raw: str) -> list[tuple[float, float]] | None:
+    if not raw or len(raw) > 6000:
+        return None
+    points = []
+    for pair in raw.split("|"):
+        parts = pair.split(",")
+        if len(parts) != 2:
+            return None
+        try:
+            lon, lat = float(parts[0]), float(parts[1])
+        except ValueError:
+            return None
+        if not isfinite(lon) or not isfinite(lat) or not -180 <= lon <= 180 or not -90 <= lat <= 90:
+            return None
+        points.append((lon, lat))
+    return points if 2 <= len(points) <= MAX_ROUTE_POINTS else None
+
+
+def valid_profile(profile: str) -> bool:
+    return profile in PROFILES
+
+
+def valid_alternative(value: str) -> bool:
+    return value in {"0", "1", "2", "3"}
+
+
+def rate_limit(scope: str) -> Response | None:
+    now = time.monotonic()
+    client = request.remote_addr or "unknown"
+    key = f"{scope}:{client}"
+    with _RATE_LOCK:
+        bucket = _RATE_BUCKETS[key]
+        while bucket and now - bucket[0] >= RATE_LIMIT_WINDOW_S:
+            bucket.popleft()
+        if len(bucket) >= RATE_LIMIT_REQUESTS:
+            return jsonify({"error": "Too many requests; retry later"}), 429
+        bucket.append(now)
+        if len(_RATE_BUCKETS) > 10000:
+            for old_key in [k for k, values in _RATE_BUCKETS.items() if not values or now - values[-1] >= RATE_LIMIT_WINDOW_S]:
+                _RATE_BUCKETS.pop(old_key, None)
+    return None
+
+
+def upstream_error(exc: Exception, service: str):
+    logger.warning("%s request failed: %s", service, exc)
+    if isinstance(exc, requests.exceptions.Timeout):
+        return jsonify({"error": f"{service} timed out"}), 504
+    if isinstance(exc, requests.exceptions.ConnectionError):
+        return jsonify({"error": f"{service} is unavailable"}), 503
+    return jsonify({"error": f"{service} request failed"}), 502
+
+
+POI_DEFS = {
+    "water": {
+        "label": "Water",
+        "query": 'nwr["amenity"="drinking_water"]({bbox}); nwr["amenity"="water_point"]({bbox}); nwr["natural"="spring"]({bbox});',
+    },
+    "food": {
+        "label": "Food",
+        "query": 'nwr["amenity"~"^(restaurant|cafe|fast_food|bar|pub)$"]({bbox});',
+    },
+    "shelter": {
+        "label": "Shelter",
+        "query": 'nwr["amenity"="shelter"]({bbox}); nwr["tourism"~"^(wilderness_hut|alpine_hut)$"]({bbox});',
+    },
+}
+
+
+def overpass_query_json(query: str, timeout_s: float = OVERPASS_TIMEOUT_S) -> dict:
+    data = None
+    last_err = None
+    headers = {
+        "User-Agent": "brouter-python-ui/1.0 (+https://localhost)",
+        "Accept": "application/json",
+    }
+    for endpoint in OVERPASS_FALLBACKS:
+        try:
+            resp = HTTP.post(
+                endpoint, data={"data": query}, headers=headers, timeout=timeout_s
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            break
+        except requests.exceptions.RequestException as e:
+            last_err = e
+            continue
+    if data is None:
+        raise last_err or requests.exceptions.RequestException(
+            "All Overpass endpoints failed"
+        )
+    return data
+
+
+def parse_bbox(raw: str) -> tuple[float, float, float, float] | None:
+    if not raw:
+        return None
+    parts = [p.strip() for p in raw.split(",")]
+    if len(parts) != 4:
+        return None
+    try:
+        s, w, n, e = (float(parts[0]), float(parts[1]), float(parts[2]), float(parts[3]))
+    except ValueError:
+        return None
+    if not all(isfinite(v) for v in (s, w, n, e)):
+        return None
+    if not (-90 <= s < n <= 90 and -180 <= w < e <= 180):
+        return None
+    if n - s > MAX_BBOX_SPAN_DEG or e - w > MAX_BBOX_SPAN_DEG:
+        return None
+    return (s, w, n, e)
+
+
+def poi_cache_get(key: str) -> dict | None:
+    with _POI_CACHE_LOCK:
+        row = _POI_CACHE.get(key)
+        if not row:
+            return None
+        ts, payload = row
+        if time.monotonic() - ts > POI_CACHE_TTL_S:
+            _POI_CACHE.pop(key, None)
+            return None
+        return payload
+
+
+def poi_cache_set(key: str, payload: dict):
+    with _POI_CACHE_LOCK:
+        _POI_CACHE[key] = (time.monotonic(), payload)
+        if len(_POI_CACHE) <= POI_CACHE_MAX:
+            return
+        oldest = sorted(_POI_CACHE.items(), key=lambda kv: kv[1][0])[: len(_POI_CACHE) - POI_CACHE_MAX]
+        for k, _ in oldest:
+            _POI_CACHE.pop(k, None)
+
+
+def build_poi_query(bbox: tuple[float, float, float, float], types: list[str]) -> str:
+    s, w, n, e = bbox
+    bbox_str = f"{s},{w},{n},{e}"
+    blocks = []
+    for t in types:
+        q = POI_DEFS[t]["query"].format(bbox=bbox_str)
+        blocks.append(q)
+    return (
+        "[out:json][timeout:30];"
+        "("
+        + "".join(blocks)
+        + ");"
+        "out center tags qt;"
+    )
+
+
+def categorize_poi(tags: dict) -> str | None:
+    amenity = tags.get("amenity")
+    natural = tags.get("natural")
+    tourism = tags.get("tourism")
+    if amenity in {"drinking_water", "water_point"} or natural == "spring":
+        return "water"
+    if amenity in {"restaurant", "cafe", "fast_food", "bar", "pub"}:
+        return "food"
+    if amenity == "shelter" or tourism in {"wilderness_hut", "alpine_hut"}:
+        return "shelter"
+    return None
+
+
+def overpass_to_poi_geojson(data: dict, allowed_types: set[str]) -> dict:
+    features = []
+    seen = set()
+    for el in data.get("elements", []):
+        tags = el.get("tags") or {}
+        cat = categorize_poi(tags)
+        if cat is None or cat not in allowed_types:
+            continue
+
+        lat = el.get("lat")
+        lon = el.get("lon")
+        center = el.get("center") or {}
+        if lat is None:
+            lat = center.get("lat")
+        if lon is None:
+            lon = center.get("lon")
+        if lat is None or lon is None:
+            continue
+
+        poi_id = f"osm:{el.get('type','node')}/{el.get('id','?')}"
+        if poi_id in seen:
+            continue
+        seen.add(poi_id)
+
+        name = tags.get("name") or POI_DEFS.get(cat, {}).get("label", cat.title())
+        features.append(
+            {
+                "type": "Feature",
+                "id": poi_id,
+                "geometry": {"type": "Point", "coordinates": [lon, lat]},
+                "properties": {
+                    "id": poi_id,
+                    "name": name,
+                    "category": cat,
+                    "tags": {
+                        "amenity": tags.get("amenity"),
+                        "tourism": tags.get("tourism"),
+                        "natural": tags.get("natural"),
+                    },
+                },
+            }
+        )
+    return {"type": "FeatureCollection", "features": features}
+
+
+def inject_gpx_waypoints(gpx_bytes: bytes, selected_pois: list[dict]) -> bytes:
+    if not selected_pois:
+        return gpx_bytes
+    try:
+        gpx_text = gpx_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        gpx_text = gpx_bytes.decode("latin-1")
+
+    wpts = []
+    for p in selected_pois:
+        if not isinstance(p, dict):
+            continue
+        lat_raw = p.get("lat")
+        lon_raw = p.get("lon")
+        if lat_raw is None or lon_raw is None:
+            continue
+        try:
+            lat = float(lat_raw)
+            lon = float(lon_raw)
+        except (TypeError, ValueError):
+            continue
+        if not isfinite(lat) or not isfinite(lon) or not -90 <= lat <= 90 or not -180 <= lon <= 180:
+            continue
+        name = xml_escape(str(p.get("name") or "POI"))
+        cat = xml_escape(str(p.get("category") or "poi"))
+        wpts.append(
+            f'<wpt lat="{lat:.6f}" lon="{lon:.6f}"><name>{name}</name><type>{cat}</type></wpt>'
+        )
+
+    if not wpts:
+        return gpx_bytes
+
+    insert = "\n" + "\n".join(wpts) + "\n"
+    if "</gpx>" in gpx_text:
+        gpx_text = gpx_text.replace("</gpx>", insert + "</gpx>")
+    else:
+        gpx_text += insert
+    return gpx_text.encode("utf-8")
 
 
 PAVED_SURFACES = {
@@ -242,7 +558,7 @@ out tags geom;
     }
     for endpoint in OVERPASS_FALLBACKS:
         try:
-            resp = requests.post(
+            resp = HTTP.post(
                 endpoint, data={"data": q}, headers=headers, timeout=45
             )
             resp.raise_for_status()
@@ -329,24 +645,29 @@ def enrich_surface_segments(coords: list) -> tuple[list[dict], float, dict]:
         best = None
         best_score = float("inf")
 
-        for os in osm_segments:
+        for osm_segment in osm_segments:
             if (
-                abs(os["mid_lat"] - rs["mid_lat"]) > 0.0008
-                or abs(os["mid_lon"] - rs["mid_lon"]) > 0.0012
+                abs(osm_segment["mid_lat"] - rs["mid_lat"]) > 0.0008
+                or abs(osm_segment["mid_lon"] - rs["mid_lon"]) > 0.0012
             ):
                 continue
             dist_m = point_to_segment_distance_m(
-                px, py, os["ax"], os["ay"], os["bx"], os["by"]
+                px,
+                py,
+                osm_segment["ax"],
+                osm_segment["ay"],
+                osm_segment["bx"],
+                osm_segment["by"],
             )
             if dist_m > 65:
                 continue
-            hd = heading_diff_deg(rs["heading"], os["heading"])
+            hd = heading_diff_deg(rs["heading"], osm_segment["heading"])
             if hd > 80:
                 continue
             score = dist_m + 0.4 * hd
             if score < best_score:
                 best_score = score
-                best = (os, dist_m, hd)
+                best = (osm_segment, dist_m, hd)
 
         if best is None:
             seg_len = rs["end"] - rs["start"]
@@ -361,7 +682,7 @@ def enrich_surface_segments(coords: list) -> tuple[list[dict], float, dict]:
             )
             continue
 
-        os, dist_m, hd = best
+        osm_segment, dist_m, hd = best
         conf = confidence_from_match(dist_m, hd)
         seg_len = rs["end"] - rs["start"]
         conf_m[conf] += max(0.0, seg_len)
@@ -369,7 +690,7 @@ def enrich_surface_segments(coords: list) -> tuple[list[dict], float, dict]:
             {
                 "dist_start_m": rs["start"],
                 "dist_end_m": rs["end"],
-                "category": surface_category(os["tags"]),
+                "category": surface_category(osm_segment["tags"]),
                 "confidence": conf,
             }
         )
@@ -439,30 +760,34 @@ def route():
     lonlats = request.args.get("lonlats")
     profile = request.args.get("profile", "trekking")
     alternativeidx = request.args.get("alternativeidx", "0")
+    limited = rate_limit("route")
+    if limited:
+        return limited
 
-    if not lonlats:
-        return jsonify({"error": "lonlats parameter is required"}), 400
+    if not parse_lonlats(lonlats or ""):
+        return jsonify({"error": "lonlats must contain 2-100 valid lon,lat points"}), 400
+    if not valid_profile(profile):
+        return jsonify({"error": "Unknown profile"}), 400
+    if not valid_alternative(alternativeidx):
+        return jsonify({"error": "alternativeidx must be 0, 1, 2, or 3"}), 400
 
     params = {
         "lonlats": lonlats,
         "profile": profile,
         "alternativeidx": alternativeidx,
         "format": "geojson",
-        **collect_profile_overrides(request.args),
+        **collect_profile_overrides(request.args, profile),
     }
 
     try:
-        resp = requests.get(BROUTER_URL, params=params, timeout=60)
+        resp = HTTP.get(BROUTER_URL, params=params, timeout=BROUTER_TIMEOUT_S)
         resp.raise_for_status()
         return Response(resp.content, status=200, mimetype="application/geo+json")
-    except requests.exceptions.ConnectionError:
-        return jsonify(
-            {"error": "Cannot connect to BRouter on localhost:17777. Is it running?"}
-        ), 503
-    except requests.exceptions.HTTPError:
-        return jsonify({"error": resp.text}), resp.status_code
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except requests.exceptions.RequestException as e:
+        return upstream_error(e, "BRouter")
+    except Exception:
+        logger.exception("Unexpected route proxy failure")
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route("/download")
@@ -473,58 +798,94 @@ def download():
     fmt = request.args.get("format", "gpx")
     trackname = request.args.get("trackname", "brouter")
     alternativeidx = request.args.get("alternativeidx", "0")
+    selected_pois_raw = request.args.get("selected_pois", "")
+    limited = rate_limit("download")
+    if limited:
+        return limited
 
-    if not lonlats:
-        return jsonify({"error": "lonlats parameter is required"}), 400
+    if not parse_lonlats(lonlats or ""):
+        return jsonify({"error": "lonlats must contain 2-100 valid lon,lat points"}), 400
+    if not valid_profile(profile):
+        return jsonify({"error": "Unknown profile"}), 400
+    if not valid_alternative(alternativeidx):
+        return jsonify({"error": "alternativeidx must be 0, 1, 2, or 3"}), 400
+    if fmt not in DOWNLOAD_FORMATS:
+        return jsonify({"error": "Unsupported download format"}), 400
+    if len(trackname) > MAX_TRACK_NAME_LEN:
+        return jsonify({"error": "Track name is too long"}), 400
+    safe_trackname = secure_filename(trackname)[:MAX_TRACK_NAME_LEN] or "brouter"
+    if len(selected_pois_raw) > 100000:
+        return jsonify({"error": "Too many selected POIs"}), 400
 
     params = {
         "lonlats": lonlats,
         "profile": profile,
         "format": fmt,
-        "trackname": trackname,
+        "trackname": safe_trackname,
         "alternativeidx": alternativeidx,
-        **collect_profile_overrides(request.args),
+        **collect_profile_overrides(request.args, profile),
     }
-
-    mime_types = {
-        "gpx": "application/gpx+xml",
-        "kml": "application/vnd.google-earth.kml+xml",
-        "geojson": "application/geo+json",
-        "csv": "text/tab-separated-values",
-    }
-    extensions = {"gpx": "gpx", "kml": "kml", "geojson": "geojson", "csv": "csv"}
 
     try:
-        resp = requests.get(BROUTER_URL, params=params, timeout=60)
+        resp = HTTP.get(BROUTER_URL, params=params, timeout=BROUTER_TIMEOUT_S)
         resp.raise_for_status()
-        mime = mime_types.get(fmt, "application/octet-stream")
-        ext = extensions.get(fmt, fmt)
-        filename = f"{trackname}.{ext}"
+        out_content = resp.content
+
+        if fmt == "gpx" and selected_pois_raw:
+            try:
+                selected_pois = json.loads(selected_pois_raw)
+                if isinstance(selected_pois, list) and len(selected_pois) <= 500:
+                    out_content = inject_gpx_waypoints(resp.content, selected_pois)
+                else:
+                    return jsonify({"error": "selected_pois must be a list of at most 500 items"}), 400
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return jsonify({"error": "selected_pois is invalid JSON"}), 400
+
+        mime, ext = DOWNLOAD_FORMATS[fmt]
+        filename = f"{safe_trackname}.{ext}"
         return Response(
-            resp.content,
+            out_content,
             status=200,
             mimetype=mime,
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
-    except requests.exceptions.ConnectionError:
-        return jsonify(
-            {"error": "Cannot connect to BRouter on localhost:17777. Is it running?"}
-        ), 503
-    except requests.exceptions.HTTPError:
-        return jsonify({"error": resp.text}), resp.status_code
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except requests.exceptions.RequestException as e:
+        return upstream_error(e, "BRouter")
+    except Exception:
+        logger.exception("Unexpected download proxy failure")
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route("/surface-enrich", methods=["POST"])
 def surface_enrich():
     """Infer paved/unpaved categories for imported GPX geometry via Overpass matching."""
     body = request.get_json(silent=True) or {}
-    feature = (body.get("features") or [{}])[0]
+    limited = rate_limit("surface-enrich")
+    if limited:
+        return limited
+    features = body.get("features")
+    if not isinstance(features, list) or not features or not isinstance(features[0], dict):
+        return jsonify({"error": "Expected a GeoJSON FeatureCollection"}), 400
+    feature = features[0]
     geom = feature.get("geometry") or {}
     coords = geom.get("coordinates") or []
-    if geom.get("type") != "LineString" or len(coords) < 2:
+    if geom.get("type") != "LineString" or not isinstance(coords, list) or not 2 <= len(coords) <= MAX_ENRICH_POINTS:
         return jsonify({"error": "Expected GeoJSON LineString coordinates"}), 400
+    validated = []
+    for coord in coords:
+        if not isinstance(coord, list) or len(coord) < 2:
+            return jsonify({"error": "Invalid route coordinate"}), 400
+        try:
+            lon, lat = float(coord[0]), float(coord[1])
+        except (TypeError, ValueError):
+            return jsonify({"error": "Invalid route coordinate"}), 400
+        if not isfinite(lon) or not isfinite(lat) or not -180 <= lon <= 180 or not -90 <= lat <= 90:
+            return jsonify({"error": "Invalid route coordinate"}), 400
+        validated.append([lon, lat])
+    coords = validated
+    south, west, north, east = route_bbox(coords)
+    if north - south > MAX_BBOX_SPAN_DEG or east - west > MAX_BBOX_SPAN_DEG:
+        return jsonify({"error": "Route extent is too large for surface enrichment"}), 400
 
     try:
         surface_segments, total_m, conf_stats = enrich_surface_segments(coords)
@@ -534,7 +895,7 @@ def surface_enrich():
             warning=f"Surface enrichment unavailable ({e.__class__.__name__}); using unknown surface.",
         )
         return jsonify(payload)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         payload = unknown_surface_fallback(
             coords,
             warning=f"Surface enrichment failed ({e.__class__.__name__}); using unknown surface.",
@@ -550,5 +911,62 @@ def surface_enrich():
     )
 
 
+@app.route("/pois")
+def pois():
+    limited = rate_limit("pois")
+    if limited:
+        return limited
+    bbox_raw = request.args.get("bbox", "")
+    zoom_raw = request.args.get("zoom", "0")
+    types_raw = request.args.get("types", "water,food,shelter")
+
+    bbox = parse_bbox(bbox_raw)
+    if not bbox:
+        return jsonify({"error": "bbox must be a bounded south,west,north,east area"}), 400
+
+    try:
+        zoom = int(zoom_raw)
+    except ValueError:
+        zoom = 0
+
+    req_types = [t.strip() for t in types_raw.split(",") if t.strip()]
+    req_types = [t for t in req_types if t in POI_DEFS]
+    if not req_types:
+        return jsonify({"type": "FeatureCollection", "features": [], "zoom_blocked": False})
+
+    if zoom < POI_MIN_ZOOM:
+        return jsonify(
+            {
+                "type": "FeatureCollection",
+                "features": [],
+                "zoom_blocked": True,
+                "min_zoom": POI_MIN_ZOOM,
+            }
+        )
+
+    normalized_bbox = (
+        round(bbox[0], 5),
+        round(bbox[1], 5),
+        round(bbox[2], 5),
+        round(bbox[3], 5),
+    )
+    cache_key = f"{','.join(map(str, normalized_bbox))}|{','.join(sorted(req_types))}|z{zoom}"
+    cached = poi_cache_get(cache_key)
+    if cached is not None:
+        return jsonify(cached)
+
+    query = build_poi_query(normalized_bbox, req_types)
+    try:
+        data = overpass_query_json(query)
+    except requests.exceptions.RequestException as e:
+        return jsonify({"error": f"POI request failed: {e.__class__.__name__}"}), 503
+
+    payload = overpass_to_poi_geojson(data, set(req_types))
+    payload["zoom_blocked"] = False
+    payload["min_zoom"] = POI_MIN_ZOOM
+    poi_cache_set(cache_key, payload)
+    return jsonify(payload)
+
+
 if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    app.run(debug=os.getenv("FLASK_DEBUG", "0") == "1", port=int(os.getenv("PORT", "5000")))

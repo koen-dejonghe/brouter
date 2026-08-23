@@ -1,2 +1,9 @@
 .venv
 data
+__pycache__/
+*.py[cod]
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+.env

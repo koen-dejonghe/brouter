@@ -92,6 +92,18 @@
     <input type="text" id="trackname" />
   </div>
 
+  <details id="poi-panel" class="field">
+    <summary>POIs</summary>
+    <div id="poi-controls">
+      <label class="poi-inline"><input type="checkbox" id="poi-enabled" /> Show POIs</label>
+      <label class="poi-inline"><input type="checkbox" id="poi-water" checked /> Water</label>
+      <label class="poi-inline"><input type="checkbox" id="poi-food" checked /> Food</label>
+      <label class="poi-inline"><input type="checkbox" id="poi-shelter" checked /> Shelter</label>
+      <div id="poi-status" class="hint">POIs are loaded from OpenStreetMap.</div>
+      <div id="poi-marked" class="hint">Marked POIs: 0</div>
+    </div>
+  </details>
+
   <!-- Actions -->
   <div id="route-actions">
     <button id="btn-import-gpx" type="button">Upload Route</button>

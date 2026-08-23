@@ -306,6 +306,44 @@ button {
   border-radius: 6px;
 }
 
+#poi-panel {
+  border: 1px solid #334155;
+  border-radius: 6px;
+}
+
+#poi-panel summary {
+  padding: 7px 10px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #94a3b8;
+  cursor: pointer;
+  background: #0f172a;
+  user-select: none;
+  border-radius: 6px;
+}
+
+#poi-controls {
+  padding: 8px 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+
+.poi-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78rem;
+  color: #cbd5e1;
+  margin: 0;
+}
+
+.poi-inline input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  accent-color: #2563eb;
+}
+
 #profile-settings summary {
   padding: 7px 10px;
   font-size: 0.82rem;

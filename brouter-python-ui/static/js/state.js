@@ -33,4 +33,13 @@ export const state = {
   lastRouteKey:      '',     // detects profile/params changes → invalidates all legs
   svgDragState:      null,   // { startX, startDist, isDragging }
   fitRouteControl:   null,   // FitRouteControl instance — set in controls.js
+  poiLayer:          null,   // L.LayerGroup with POI markers
+  poiEnabled:        false,
+  poiTypes:          new Set(['water', 'food', 'shelter']),
+  poiFetchTimer:     null,
+  poiLoading:        false,
+  selectedPois:      [],     // explicitly marked POIs for GPX export
+  poiStore:          new Map(), // id -> { id, name, category, lat, lon }
+  addPreviewLine:    null,    // temporary line from last waypoint to cursor
+  addPreviewLabel:   null,    // distance label for add preview
 };
