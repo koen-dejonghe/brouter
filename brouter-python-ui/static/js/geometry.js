@@ -54,3 +54,51 @@ export function angleDifferenceDegrees(a, b) {
   const difference = Math.abs(a - b) % 360;
   return Math.min(difference, 360 - difference);
 }
+
+function quantile(sorted, fraction) {
+  if (!sorted.length) return null;
+  const position = (sorted.length - 1) * fraction;
+  const lower = Math.floor(position);
+  const upper = Math.ceil(position);
+  if (lower === upper) return sorted[lower];
+  return sorted[lower] + (sorted[upper] - sorted[lower]) * (position - lower);
+}
+
+export function sustainedGradeExtremes(points, windowM = 300) {
+  const valid = points
+    .map(point => ({ distance: Number(point.distance), elevation: Number(point.elevation) }))
+    .filter(point => Number.isFinite(point.distance) && Number.isFinite(point.elevation))
+    .sort((a, b) => a.distance - b.distance);
+  if (valid.length < 2) return { maxGrade: null, minGrade: null };
+
+  const totalM = valid[valid.length - 1].distance - valid[0].distance;
+  const effectiveWindowM = Math.min(windowM, totalM);
+  const minimumSpanM = Math.max(50, effectiveWindowM * 0.65);
+  const halfWindowM = effectiveWindowM / 2;
+  const grades = [];
+
+  let left = 0, right = 0, count = 0;
+  let sumX = 0, sumY = 0, sumXX = 0, sumXY = 0;
+  const add = point => {
+    count += 1; sumX += point.distance; sumY += point.elevation;
+    sumXX += point.distance * point.distance; sumXY += point.distance * point.elevation;
+  };
+  const remove = point => {
+    count -= 1; sumX -= point.distance; sumY -= point.elevation;
+    sumXX -= point.distance * point.distance; sumXY -= point.distance * point.elevation;
+  };
+
+  for (const center of valid) {
+    const start = center.distance - halfWindowM;
+    const end = center.distance + halfWindowM;
+    while (right < valid.length && valid[right].distance <= end) add(valid[right++]);
+    while (left < right && valid[left].distance < start) remove(valid[left++]);
+    if (count < 2 || valid[right - 1].distance - valid[left].distance < minimumSpanM) continue;
+    const denominator = count * sumXX - sumX * sumX;
+    if (denominator <= 0) continue;
+    grades.push((count * sumXY - sumX * sumY) / denominator * 100);
+  }
+
+  grades.sort((a, b) => a - b);
+  return { maxGrade: quantile(grades, 0.95), minGrade: quantile(grades, 0.05) };
+}

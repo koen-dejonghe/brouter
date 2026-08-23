@@ -206,20 +206,11 @@ export function computeRouteStats(geojson) {
     }
     geomTotalM += cumDist[cumDist.length - 1];
     if (hasElev) {
-      const WINDOW_M = 100;
-      let j = 0;
-      for (let i = 0; i < part.length - 1; i++) {
-        if (j <= i) j = i + 1;
-        while (j < part.length - 1 && cumDist[j] - cumDist[i] < WINDOW_M) j++;
-        const span = cumDist[j] - cumDist[i];
-        if (span < 1) continue;
-        const z1 = Number(part[i][2]);
-        const z2 = Number(part[j][2]);
-        if (!Number.isFinite(z1) || !Number.isFinite(z2)) continue;
-        const grade = (z2 - z1) / span * 100;
-        if (grade > maxGrade) maxGrade = grade;
-        if (grade < minGrade) minGrade = grade;
-      }
+      const extremes = sustainedGradeExtremes(part.map((coordinate, index) => ({
+        distance: cumDist[index], elevation: coordinate[2],
+      })));
+      if (extremes.maxGrade !== null) maxGrade = Math.max(maxGrade, extremes.maxGrade);
+      if (extremes.minGrade !== null) minGrade = Math.min(minGrade, extremes.minGrade);
     }
   }
 
@@ -265,7 +256,7 @@ export function showStats(props, geojson) {
     if (s.gainM !== null) rows.push(`<div>Elevation gain: <strong>${s.gainM} m</strong></div>`);
     if (s.lossM !== null) rows.push(`<div>Elevation loss: <strong>${s.lossM} m</strong></div>`);
     if (s.maxGrade !== null)
-      rows.push(`<div>Max grade: <strong>${s.maxGrade.toFixed(1)}%</strong> &nbsp; Min grade: <strong>${s.minGrade.toFixed(1)}%</strong></div>`);
+      rows.push(`<div>Sustained grade: <strong>${s.maxGrade.toFixed(1)}%</strong> &nbsp; ${s.minGrade.toFixed(1)}%</div>`);
     rows.push(`<div style="margin-top:4px"><strong>Surface</strong></div>`);
     rows.push(`<div>Paved: <strong>${fmt1(s.pavedM)} km</strong> <span style="color:#475569">(${pct(s.pavedM)}%)</span></div>`);
     rows.push(`<div>Unpaved: <strong>${fmt1(s.unpavedM)} km</strong> <span style="color:#475569">(${pct(s.unpavedM)}%)</span></div>`);
@@ -278,3 +269,4 @@ export function showStats(props, geojson) {
   body.innerHTML = rows.join('');
   statsDiv.style.display = rows.length ? 'block' : 'none';
 }
+import { sustainedGradeExtremes } from './geometry.js';

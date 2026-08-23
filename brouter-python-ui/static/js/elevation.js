@@ -1,5 +1,6 @@
 import { state } from './state.js';
 import { parseTags } from './stats.js';
+import { sustainedGradeExtremes } from './geometry.js';
 
 // ── Color maps ─────────────────────────────────────────────────────────────
 
@@ -607,23 +608,20 @@ function clearSelection() {
 function computeSelStats(d0, d1) {
   const pts = state.elevData.filter(p => p.cumDist >= d0 && p.cumDist <= d1);
   if (pts.length < 2) return null;
-  let gain = 0, loss = 0, maxGrade = -Infinity, minGrade = Infinity;
+  let gain = 0, loss = 0;
   for (let i = 1; i < pts.length; i++) {
     const dElev = pts[i].elev - pts[i - 1].elev;
-    const dDist = pts[i].cumDist - pts[i - 1].cumDist;
     if (dElev > 0) gain += dElev; else loss += Math.abs(dElev);
-    if (dDist > 0) {
-      const g = dElev / dDist * 100;
-      if (g > maxGrade) maxGrade = g;
-      if (g < minGrade) minGrade = g;
-    }
   }
+  const extremes = sustainedGradeExtremes(pts.map(point => ({
+    distance: point.cumDist, elevation: point.elev,
+  })));
   return {
     distM: d1 - d0,
     gain:  Math.round(gain),
     loss:  Math.round(loss),
-    maxGrade: isFinite(maxGrade) ? maxGrade : null,
-    minGrade: isFinite(minGrade) ? minGrade : null,
+    maxGrade: extremes.maxGrade,
+    minGrade: extremes.minGrade,
   };
 }
 
@@ -639,8 +637,8 @@ function renderSelStats(d0, d1) {
     <div class="sel-stat"><span class="sel-stat-val">${fmtDist}</span><span class="sel-stat-lbl">distance</span></div>
     <div class="sel-stat"><span class="sel-stat-val">+${s.gain} m</span><span class="sel-stat-lbl">gain</span></div>
     <div class="sel-stat"><span class="sel-stat-val">−${s.loss} m</span><span class="sel-stat-lbl">loss</span></div>
-    <div class="sel-stat"><span class="sel-stat-val">${fmtGrade(s.maxGrade)}</span><span class="sel-stat-lbl">max grade</span></div>
-    <div class="sel-stat"><span class="sel-stat-val">${fmtGrade(s.minGrade)}</span><span class="sel-stat-lbl">min grade</span></div>
+    <div class="sel-stat"><span class="sel-stat-val">${fmtGrade(s.maxGrade)}</span><span class="sel-stat-lbl">max sustained</span></div>
+    <div class="sel-stat"><span class="sel-stat-val">${fmtGrade(s.minGrade)}</span><span class="sel-stat-lbl">min sustained</span></div>
     <button id="btn-clear-sel" title="Clear selection">✕ Reset</button>`;
   card.classList.add('visible');
   document.getElementById('btn-clear-sel').addEventListener('click', clearSelection);

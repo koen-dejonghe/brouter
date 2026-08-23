@@ -48,3 +48,13 @@ def test_imported_surface_uses_brouter_with_geometry_fallback():
     assert "enrichImportedSurfaceViaBrouter" in main
     assert "surfaceSegmentsFromBrouterMessages" in main
     assert "enrichImportedSurfaceViaOverpass" in main
+
+
+def test_grade_extremes_use_robust_sustained_windows():
+    geometry = (ROOT / "static/js/geometry.js").read_text()
+    stats = (ROOT / "static/js/stats.js").read_text()
+    elevation = (ROOT / "static/js/elevation.js").read_text()
+    assert "sustainedGradeExtremes" in geometry
+    assert "quantile(grades, 0.95)" in geometry
+    assert "sustainedGradeExtremes" in stats
+    assert "sustainedGradeExtremes" in elevation
