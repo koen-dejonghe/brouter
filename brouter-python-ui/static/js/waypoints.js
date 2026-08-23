@@ -221,6 +221,8 @@ export function makeWpRow(w, i) {
   const large = (i === 0 || i === n - 1);
   const row = document.createElement('div');
   row.className = 'wp-row';
+  row.setAttribute('role', 'listitem');
+  row.setAttribute('aria-label', `${i === 0 ? 'Start' : i === n - 1 ? 'Finish' : 'Via'} waypoint, ${w.lat.toFixed(5)}, ${w.lon.toFixed(5)}`);
   row.dataset.idx = i;
   row.draggable = true;
   row.innerHTML = `
@@ -228,7 +230,9 @@ export function makeWpRow(w, i) {
     <div class="wp-dot${large ? ' large' : ''}" style="background:${color}"></div>
     <div class="wp-coords">${w.lat.toFixed(5)}, ${w.lon.toFixed(5)}</div>
     <div class="wp-btns">
-      <button data-action="rm" data-idx="${i}" title="Remove">✕</button>
+      <button data-action="up" data-idx="${i}" aria-label="Move waypoint up" ${i === 0 ? 'disabled' : ''}>↑</button>
+      <button data-action="down" data-idx="${i}" aria-label="Move waypoint down" ${i === n - 1 ? 'disabled' : ''}>↓</button>
+      <button data-action="rm" data-idx="${i}" aria-label="Remove waypoint">✕</button>
     </div>`;
 
   row.addEventListener('mouseenter', () => { if (state.dragSrcIdx === null) highlightWaypoint(i); });
@@ -275,6 +279,7 @@ export function renderWaypointList() {
   if (toggle) {
     toggle.classList.toggle('active', state.wpListVisible);
     toggle.textContent = state.wpListVisible ? '▾ Waypoints' : '▸ Waypoints';
+    toggle.setAttribute('aria-expanded', String(state.wpListVisible));
   }
 
   list.innerHTML = '';

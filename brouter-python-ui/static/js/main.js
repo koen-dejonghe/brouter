@@ -7,7 +7,8 @@ import { buildRouteParams, currentLonlats, scheduleRoute, renderRoute, stitchLeg
 import { renderChart, initElevModeButtons } from './elevation.js';
 import { initGeocoder } from './geocoder.js';
 import { setStatus, saveRoute, clearSavedRoute, storageKey } from './utils.js';
-import { parseGpxString, buildSmartWaypointsFromGeoJson, geometryParts } from './gpx.js';
+import { parseGpxString, buildSmartWaypointsFromGeoJson } from './gpx.js';
+import { geometryLengthMeters, geometryParts } from './geometry.js';
 
 // ── Map setup ──────────────────────────────────────────────────────────────
 
@@ -481,6 +482,7 @@ document.addEventListener('waypoint-contextmenu', e => {
 document.getElementById('btn-add-waypoint').addEventListener('click', () => {
   state.addingMode = !state.addingMode;
   document.getElementById('btn-add-waypoint').classList.toggle('active', state.addingMode);
+  document.getElementById('btn-add-waypoint').setAttribute('aria-pressed', String(state.addingMode));
   state.map.getContainer().classList.toggle('picking-cursor', state.addingMode);
   if (!state.addingMode) clearAddPreview();
   setStatus(state.addingMode ? 'Click on the map to add waypoints. Press Esc to stop.' : '', state.addingMode ? 'info' : '');
@@ -496,9 +498,20 @@ document.getElementById('btn-toggle-waypoints').addEventListener('click', () => 
 
 // Event delegation for remove button in waypoint list
 document.getElementById('waypoint-list').addEventListener('click', e => {
-  const btn = e.target.closest('button[data-action="rm"]');
+  const btn = e.target.closest('button[data-action]');
   if (!btn) return;
-  removeWaypoint(parseInt(btn.dataset.idx, 10));
+  const idx = parseInt(btn.dataset.idx, 10);
+  if (btn.dataset.action === 'rm') removeWaypoint(idx);
+  if (btn.dataset.action === 'up' && idx > 0) {
+    state.dragSrcIdx = idx;
+    document.querySelector(`.wp-row[data-idx="${idx - 1}"]`)?.dispatchEvent(new Event('drop', { bubbles: true, cancelable: true }));
+    state.dragSrcIdx = null;
+  }
+  if (btn.dataset.action === 'down' && idx < state.waypoints.length - 1) {
+    state.dragSrcIdx = idx;
+    document.querySelector(`.wp-row[data-idx="${idx + 1}"]`)?.dispatchEvent(new Event('drop', { bubbles: true, cancelable: true }));
+    state.dragSrcIdx = null;
+  }
 });
 
 // ── Keyboard shortcuts ─────────────────────────────────────────────────────
@@ -689,19 +702,6 @@ function restoreRoute() {
   }
 }
 
-function routeLengthFromCoords(coords) {
-  if (!coords || coords.length < 2) return 0;
-  let total = 0;
-  for (let i = 1; i < coords.length; i++) {
-    const [lon1, lat1] = coords[i - 1];
-    const [lon2, lat2] = coords[i];
-    const dLat = (lat2 - lat1) * 111320;
-    const dLon = (lon2 - lon1) * 111320 * Math.cos((lat1 + lat2) / 2 * Math.PI / 180);
-    total += Math.sqrt(dLat * dLat + dLon * dLon);
-  }
-  return total;
-}
-
 async function enrichImportedSurface(geojson, signal) {
   const parts = geometryParts(geojson);
   let offset = 0;
@@ -717,7 +717,7 @@ async function enrichImportedSurface(geojson, signal) {
     for (const segment of payload.surface_segments || []) {
       surfaceSegments.push({ ...segment, dist_start_m: segment.dist_start_m + offset, dist_end_m: segment.dist_end_m + offset });
     }
-    const len = Number(payload.track_length_m) || routeLengthFromCoords(coordinates);
+    const len = Number(payload.track_length_m) || geometryLengthMeters({ type: 'LineString', coordinates });
     high += len * (payload.surface_stats?.highPct || 0) / 100;
     medium += len * (payload.surface_stats?.mediumPct || 0) / 100;
     low += len * (payload.surface_stats?.lowPct || 0) / 100;
@@ -762,7 +762,7 @@ function initGpxImport() {
       state.importedRoute = { originalXml: xml, fileName: file.name, geojson: parsed.geojson };
       state.undoStack = [];
       replaceWaypoints(waypoints, false);
-      parsed.geojson.features[0].properties['track-length'] = geometryParts(parsed.geojson).reduce((sum, part) => sum + routeLengthFromCoords(part), 0);
+      parsed.geojson.features[0].properties['track-length'] = geometryLengthMeters(parsed.geojson);
       renderRoute(parsed.geojson, true);
 
       const viaCount = Math.max(0, waypoints.length - 2);
@@ -862,6 +862,7 @@ document.getElementById('btn-toggle-panel').addEventListener('click', () => {
   const panel     = document.getElementById('profile-panel');
   const collapsed = panel.classList.toggle('collapsed');
   document.getElementById('btn-toggle-panel').textContent = collapsed ? '▲ Show' : '▼ Hide';
+  document.getElementById('btn-toggle-panel').setAttribute('aria-expanded', String(!collapsed));
   setTimeout(() => { state.map.invalidateSize(); if (!collapsed && state.elevData) renderChart(); }, 50);
 });
 
@@ -872,8 +873,16 @@ document.getElementById('sidebar-toggle').addEventListener('click', () => {
   const collapsed = sidebar.classList.toggle('collapsed');
   document.getElementById('sidebar-toggle').textContent = collapsed ? '›' : '‹';
   document.getElementById('sidebar-toggle').title = collapsed ? 'Expand sidebar' : 'Collapse sidebar';
+  document.getElementById('sidebar-toggle').setAttribute('aria-expanded', String(!collapsed));
+  document.getElementById('sidebar-toggle').setAttribute('aria-label', collapsed ? 'Expand route planning controls' : 'Collapse route planning controls');
   setTimeout(() => { state.map.invalidateSize(); if (state.elevData) renderChart(); }, 260);
 });
+
+if (window.matchMedia('(max-width: 760px)').matches) {
+  document.getElementById('sidebar').classList.add('collapsed');
+  document.getElementById('sidebar-toggle').setAttribute('aria-expanded', 'false');
+  document.getElementById('sidebar-toggle').setAttribute('aria-label', 'Expand route planning controls');
+}
 
 // Re-render chart on resize
 window.addEventListener('resize', () => { if (state.elevData) renderChart(); });

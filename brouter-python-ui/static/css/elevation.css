@@ -51,7 +51,7 @@
 
 #profile-panel-body {
   position: relative;
-  height: 130px;
+  height: clamp(120px, 20dvh, 180px);
 }
 #profile-panel.collapsed #profile-panel-body { display: none; }
 
@@ -62,7 +62,7 @@
 #sel-stats-card {
   display: none;
   position: absolute;
-  top: 6px; left: 50px;
+  top: 6px; left: 50px; right: 8px;
   background: rgba(15,23,42,0.93);
   border: 1px solid #334155;
   border-radius: 6px;
@@ -73,7 +73,8 @@
   gap: 14px;
   align-items: center;
   pointer-events: auto;
-  white-space: nowrap;
+  white-space: normal;
+  flex-wrap: wrap;
 }
 #sel-stats-card.visible { display: flex; }
 .sel-stat { display: flex; flex-direction: column; align-items: center; gap: 1px; }
@@ -130,3 +131,8 @@
 #surface-legend.visible { display: flex; }
 .surf-item { display: flex; align-items: center; gap: 4px; font-size: 0.68rem; color: #94a3b8; }
 .surf-swatch { width: 14px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+
+@media (max-width: 760px) {
+  #profile-panel-body { height: 120px; }
+  #surface-legend { max-height: 88px; overflow-y: auto; }
+}

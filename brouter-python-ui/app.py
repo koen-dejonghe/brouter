@@ -5,49 +5,34 @@ import re
 import time
 from collections import defaultdict, deque
 from math import atan2, cos, isfinite, pi, sqrt
-from pathlib import Path
 from threading import Lock
 from xml.sax.saxutils import escape as xml_escape
 
 import requests
 from flask import Flask, Response, jsonify, render_template, request
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 from werkzeug.utils import secure_filename
 
-app = Flask(__name__)
+from brouter_ui.config import load_settings
+from brouter_ui.http import create_session, query_overpass
 
-BROUTER_URL = os.getenv("BROUTER_URL", "http://localhost:17777/brouter")
-OVERPASS_URL = os.getenv("OVERPASS_URL", "https://overpass-api.de/api/interpreter")
-OVERPASS_FALLBACKS = [
-    OVERPASS_URL,
-    *[
-        url.strip()
-        for url in os.getenv(
-            "OVERPASS_FALLBACK_URLS",
-            "https://lz4.overpass-api.de/api/interpreter,https://overpass.kumi.systems/api/interpreter",
-        ).split(",")
-        if url.strip() and url.strip() != OVERPASS_URL
-    ],
-]
-PROFILES_DIR = Path(
-    os.getenv(
-        "BROUTER_PROFILES_DIR",
-        str(Path(__file__).parent.parent / "misc" / "profiles2"),
-    )
-)
-POI_CACHE_TTL_S = int(os.getenv("POI_CACHE_TTL_S", "120"))
-POI_CACHE_MAX = int(os.getenv("POI_CACHE_MAX", "120"))
-POI_MIN_ZOOM = int(os.getenv("POI_MIN_ZOOM", "12"))
-BROUTER_TIMEOUT_S = float(os.getenv("BROUTER_TIMEOUT_S", "60"))
-OVERPASS_TIMEOUT_S = float(os.getenv("OVERPASS_TIMEOUT_S", "35"))
-MAX_ROUTE_POINTS = int(os.getenv("MAX_ROUTE_POINTS", "100"))
-MAX_ENRICH_POINTS = int(os.getenv("MAX_ENRICH_POINTS", "10000"))
-MAX_BBOX_SPAN_DEG = float(os.getenv("MAX_BBOX_SPAN_DEG", "2"))
-MAX_TRACK_NAME_LEN = int(os.getenv("MAX_TRACK_NAME_LEN", "100"))
-RATE_LIMIT_WINDOW_S = int(os.getenv("RATE_LIMIT_WINDOW_S", "60"))
-RATE_LIMIT_REQUESTS = int(os.getenv("RATE_LIMIT_REQUESTS", "30"))
-app.config["MAX_CONTENT_LENGTH"] = int(os.getenv("MAX_CONTENT_LENGTH", "2097152"))
+app = Flask(__name__)
+SETTINGS = load_settings()
+BROUTER_URL = SETTINGS.brouter_url
+OVERPASS_URL = SETTINGS.overpass_url
+OVERPASS_FALLBACKS = SETTINGS.overpass_fallbacks
+PROFILES_DIR = SETTINGS.profiles_dir
+POI_CACHE_TTL_S = SETTINGS.poi_cache_ttl_s
+POI_CACHE_MAX = SETTINGS.poi_cache_max
+POI_MIN_ZOOM = SETTINGS.poi_min_zoom
+BROUTER_TIMEOUT_S = SETTINGS.brouter_timeout_s
+OVERPASS_TIMEOUT_S = SETTINGS.overpass_timeout_s
+MAX_ROUTE_POINTS = SETTINGS.max_route_points
+MAX_ENRICH_POINTS = SETTINGS.max_enrich_points
+MAX_BBOX_SPAN_DEG = SETTINGS.max_bbox_span_deg
+MAX_TRACK_NAME_LEN = SETTINGS.max_track_name_len
+RATE_LIMIT_WINDOW_S = SETTINGS.rate_limit_window_s
+RATE_LIMIT_REQUESTS = SETTINGS.rate_limit_requests
+app.config["MAX_CONTENT_LENGTH"] = SETTINGS.max_content_length
 _POI_CACHE: dict[str, tuple[float, dict]] = {}
 _POI_CACHE_LOCK = Lock()
 _RATE_BUCKETS: dict[str, deque[float]] = defaultdict(deque)
@@ -56,22 +41,7 @@ _RATE_LOCK = Lock()
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
 
-HTTP = requests.Session()
-HTTP.headers.update({"User-Agent": "brouter-python-ui/1.0", "Accept": "application/json"})
-HTTP.mount(
-    "https://",
-    HTTPAdapter(
-        max_retries=Retry(
-            total=1,
-            connect=1,
-            read=0,
-            status=1,
-            backoff_factor=0.2,
-            status_forcelist=(429, 502, 503, 504),
-            allowed_methods=frozenset({"GET"}),
-        )
-    ),
-)
+HTTP = create_session()
 
 PROFILE_OVERRIDE_RE = re.compile(r"^profile:[A-Za-z_][A-Za-z0-9_]{0,63}$")
 DOWNLOAD_FORMATS = {
@@ -221,7 +191,12 @@ def rate_limit(scope: str) -> Response | None:
             return jsonify({"error": "Too many requests; retry later"}), 429
         bucket.append(now)
         if len(_RATE_BUCKETS) > 10000:
-            for old_key in [k for k, values in _RATE_BUCKETS.items() if not values or now - values[-1] >= RATE_LIMIT_WINDOW_S]:
+            expired = [
+                key
+                for key, values in _RATE_BUCKETS.items()
+                if not values or now - values[-1] >= RATE_LIMIT_WINDOW_S
+            ]
+            for old_key in expired:
                 _RATE_BUCKETS.pop(old_key, None)
     return None
 
@@ -238,7 +213,11 @@ def upstream_error(exc: Exception, service: str):
 POI_DEFS = {
     "water": {
         "label": "Water",
-        "query": 'nwr["amenity"="drinking_water"]({bbox}); nwr["amenity"="water_point"]({bbox}); nwr["natural"="spring"]({bbox});',
+        "query": (
+            'nwr["amenity"="drinking_water"]({bbox}); '
+            'nwr["amenity"="water_point"]({bbox}); '
+            'nwr["natural"="spring"]({bbox});'
+        ),
     },
     "food": {
         "label": "Food",
@@ -246,34 +225,16 @@ POI_DEFS = {
     },
     "shelter": {
         "label": "Shelter",
-        "query": 'nwr["amenity"="shelter"]({bbox}); nwr["tourism"~"^(wilderness_hut|alpine_hut)$"]({bbox});',
+        "query": (
+            'nwr["amenity"="shelter"]({bbox}); '
+            'nwr["tourism"~"^(wilderness_hut|alpine_hut)$"]({bbox});'
+        ),
     },
 }
 
 
 def overpass_query_json(query: str, timeout_s: float = OVERPASS_TIMEOUT_S) -> dict:
-    data = None
-    last_err = None
-    headers = {
-        "User-Agent": "brouter-python-ui/1.0 (+https://localhost)",
-        "Accept": "application/json",
-    }
-    for endpoint in OVERPASS_FALLBACKS:
-        try:
-            resp = HTTP.post(
-                endpoint, data={"data": query}, headers=headers, timeout=timeout_s
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            break
-        except requests.exceptions.RequestException as e:
-            last_err = e
-            continue
-    if data is None:
-        raise last_err or requests.exceptions.RequestException(
-            "All Overpass endpoints failed"
-        )
-    return data
+    return query_overpass(HTTP, OVERPASS_FALLBACKS, query, timeout_s)
 
 
 def parse_bbox(raw: str) -> tuple[float, float, float, float] | None:
@@ -312,7 +273,8 @@ def poi_cache_set(key: str, payload: dict):
         _POI_CACHE[key] = (time.monotonic(), payload)
         if len(_POI_CACHE) <= POI_CACHE_MAX:
             return
-        oldest = sorted(_POI_CACHE.items(), key=lambda kv: kv[1][0])[: len(_POI_CACHE) - POI_CACHE_MAX]
+        excess = len(_POI_CACHE) - POI_CACHE_MAX
+        oldest = sorted(_POI_CACHE.items(), key=lambda kv: kv[1][0])[:excess]
         for k, _ in oldest:
             _POI_CACHE.pop(k, None)
 
@@ -554,27 +516,7 @@ def fetch_osm_way_segments(coords: list) -> list[dict]:
 out tags geom;
 """.strip()
 
-    data = None
-    last_err = None
-    headers = {
-        "User-Agent": "brouter-python-ui/1.0 (+https://localhost)",
-        "Accept": "application/json",
-    }
-    for endpoint in OVERPASS_FALLBACKS:
-        try:
-            resp = HTTP.post(
-                endpoint, data={"data": q}, headers=headers, timeout=45
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            break
-        except requests.exceptions.RequestException as e:
-            last_err = e
-            continue
-    if data is None:
-        raise last_err or requests.exceptions.RequestException(
-            "All Overpass endpoints failed"
-        )
+    data = query_overpass(HTTP, OVERPASS_FALLBACKS, q, OVERPASS_TIMEOUT_S)
 
     out = []
     for el in data.get("elements", []):
@@ -757,6 +699,17 @@ def index():
     return render_template("index.html", profiles=PROFILES)
 
 
+@app.route("/health/live")
+def health_live():
+    return jsonify({"status": "ok"})
+
+
+@app.route("/health/ready")
+def health_ready():
+    ready = PROFILES_DIR.is_dir()
+    return jsonify({"status": "ready" if ready else "not-ready"}), 200 if ready else 503
+
+
 @app.route("/profile-params/<profile>")
 def profile_params(profile):
     """Return parsed configurable parameters for a profile as JSON."""
@@ -849,7 +802,10 @@ def download():
                 if isinstance(selected_pois, list) and len(selected_pois) <= 500:
                     out_content = inject_gpx_waypoints(resp.content, selected_pois)
                 else:
-                    return jsonify({"error": "selected_pois must be a list of at most 500 items"}), 400
+                    return (
+                        jsonify({"error": "selected_pois must be a list of at most 500 items"}),
+                        400,
+                    )
             except (TypeError, ValueError, json.JSONDecodeError):
                 return jsonify({"error": "selected_pois is invalid JSON"}), 400
 
@@ -881,7 +837,11 @@ def surface_enrich():
     feature = features[0]
     geom = feature.get("geometry") or {}
     coords = geom.get("coordinates") or []
-    if geom.get("type") != "LineString" or not isinstance(coords, list) or not 2 <= len(coords) <= MAX_ENRICH_POINTS:
+    if (
+        geom.get("type") != "LineString"
+        or not isinstance(coords, list)
+        or not 2 <= len(coords) <= MAX_ENRICH_POINTS
+    ):
         return jsonify({"error": "Expected GeoJSON LineString coordinates"}), 400
     validated = []
     for coord in coords:
@@ -904,7 +864,10 @@ def surface_enrich():
     except requests.exceptions.RequestException as e:
         payload = unknown_surface_fallback(
             coords,
-            warning=f"Surface enrichment unavailable ({e.__class__.__name__}); using unknown surface.",
+            warning=(
+                f"Surface enrichment unavailable ({e.__class__.__name__}); "
+                "using unknown surface."
+            ),
         )
         return jsonify(payload)
     except Exception as e:  # noqa: BLE001

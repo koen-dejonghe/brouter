@@ -20,8 +20,13 @@ export function initGeocoder() {
     searchAbortController = null;
   }
 
-  function openDropdown()  { dropdown.classList.add('open'); }
-  function closeDropdown() { dropdown.classList.remove('open'); activeIdx = -1; }
+  function openDropdown()  { dropdown.classList.add('open'); input.setAttribute('aria-expanded', 'true'); }
+  function closeDropdown() {
+    dropdown.classList.remove('open');
+    input.setAttribute('aria-expanded', 'false');
+    input.removeAttribute('aria-activedescendant');
+    activeIdx = -1;
+  }
 
   function renderResults(features) {
     lastResults = features;
@@ -45,6 +50,9 @@ export function initGeocoder() {
 
       const item = document.createElement('div');
       item.className = 'search-item';
+      item.id = `search-option-${i}`;
+      item.setAttribute('role', 'option');
+      item.setAttribute('aria-selected', 'false');
       const title = document.createElement('div');
       title.textContent = name;
       item.appendChild(title);
@@ -66,7 +74,15 @@ export function initGeocoder() {
 
   function highlightItem(idx) {
     const items = dropdown.querySelectorAll('.search-item');
-    items.forEach((el, i) => el.classList.toggle('active', i === idx));
+    items.forEach((el, i) => {
+      const active = i === idx;
+      el.classList.toggle('active', active);
+      el.setAttribute('aria-selected', String(active));
+      if (active) {
+        input.setAttribute('aria-activedescendant', el.id);
+        el.scrollIntoView({ block: 'nearest' });
+      }
+    });
   }
 
   function selectResult(idx) {

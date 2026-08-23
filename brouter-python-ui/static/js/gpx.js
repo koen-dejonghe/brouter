@@ -49,19 +49,9 @@ function parseParts(doc) {
 }
 
 function cumulativeGeometry(points) {
-  const out = [];
-  let cum = 0;
-  for (let i = 0; i < points.length; i++) {
-    if (i > 0) {
-      const a = points[i - 1];
-      const b = points[i];
-      const dLat = (b.lat - a.lat) * 111320;
-      const dLon = (b.lon - a.lon) * 111320 * Math.cos((a.lat + b.lat) / 2 * Math.PI / 180);
-      cum += Math.sqrt(dLat * dLat + dLon * dLon);
-    }
-    out.push({ ...points[i], cumDist: cum });
-  }
-  return out;
+  return measureCoordinates(points.map(point => [point.lon, point.lat])).map(point => ({
+    lat: point.lat, lon: point.lon, cumDist: point.measureM,
+  }));
 }
 
 function nearestIndexByDist(geom, target) {
@@ -78,17 +68,8 @@ function nearestIndexByDist(geom, target) {
   return Math.abs(a.cumDist - target) <= Math.abs(b.cumDist - target) ? lo - 1 : lo;
 }
 
-function headingDeg(a, b) {
-  const dLat = (b.lat - a.lat) * 111320;
-  const dLon = (b.lon - a.lon) * 111320 * Math.cos((a.lat + b.lat) / 2 * Math.PI / 180);
-  if (dLat === 0 && dLon === 0) return 0;
-  return Math.atan2(dLon, dLat) * 180 / Math.PI;
-}
-
-function angleDiffDeg(a, b) {
-  const d = Math.abs(a - b) % 360;
-  return Math.min(d, 360 - d);
-}
+const headingDeg = (a, b) => headingDegrees([a.lon, a.lat], [b.lon, b.lat]);
+const angleDiffDeg = angleDifferenceDegrees;
 
 function addCandidate(map, idx, score, critical = false) {
   const cur = map.get(idx);
@@ -184,15 +165,8 @@ export function parseGpxString(xmlText) {
   return { geojson, name };
 }
 
-export function geometryParts(geojson) {
-  const geometry = geojson?.features?.[0]?.geometry;
-  if (geometry?.type === 'LineString') return [geometry.coordinates];
-  if (geometry?.type === 'MultiLineString') return geometry.coordinates;
-  return [];
-}
-
 function primaryCoords(geojson) {
-  return geometryParts(geojson).reduce((best, part) => part.length > best.length ? part : best, []);
+  return longestGeometryPart(geojson);
 }
 
 export function buildRegularWaypointsFromGeoJson(geojson, intervalKm = 10) {
@@ -302,3 +276,4 @@ export function buildSmartWaypointsFromGeoJson(geojson) {
   };
   return waypoints;
 }
+import { angleDifferenceDegrees, headingDegrees, longestGeometryPart, measureCoordinates } from './geometry.js';

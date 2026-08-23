@@ -169,3 +169,11 @@ def test_opposite_way_direction_is_accepted(monkeypatch):
     )
     segments, _, _ = application.enrich_surface_segments([[0.0, 0.0], [0.001, 0.0]])
     assert segments[0]["category"] == "paved"
+
+
+def test_health_endpoints(client, monkeypatch, tmp_path):
+    assert client.get("/health/live").get_json() == {"status": "ok"}
+    monkeypatch.setattr(application, "PROFILES_DIR", tmp_path)
+    assert client.get("/health/ready").status_code == 200
+    monkeypatch.setattr(application, "PROFILES_DIR", tmp_path / "missing")
+    assert client.get("/health/ready").status_code == 503

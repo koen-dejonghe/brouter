@@ -19,6 +19,13 @@ uv run flask --app app run
 For production, run the Flask application through a production WSGI server. Debug mode is
 disabled by default and should not be enabled on a publicly reachable service.
 
+```bash
+uv run gunicorn -c gunicorn.conf.py app:app
+```
+
+Health probes are available at `/health/live` and `/health/ready`. Readiness verifies that the
+configured BRouter profile directory exists without contacting external services.
+
 ## Configuration
 
 Configuration is read from environment variables:

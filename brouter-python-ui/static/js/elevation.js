@@ -156,6 +156,7 @@ export function drawElevationProfile(geojson) {
   const panel = document.getElementById('profile-panel');
   panel.classList.remove('collapsed');
   document.getElementById('btn-toggle-panel').textContent = '▼ Hide';
+  document.getElementById('btn-toggle-panel').setAttribute('aria-expanded', 'true');
   setTimeout(() => state.map.invalidateSize(), 50);
   renderChart();
 }
@@ -327,6 +328,7 @@ export function clearElevationProfile() {
   document.getElementById('sel-stats-card').classList.remove('visible');
   document.getElementById('profile-panel').classList.add('collapsed');
   document.getElementById('btn-toggle-panel').textContent = '▲ Show';
+  document.getElementById('btn-toggle-panel').setAttribute('aria-expanded', 'false');
   state.map.invalidateSize();
 }
 
@@ -655,12 +657,16 @@ export function initElevModeButtons() {
     state.elevMode = 'gradient';
     document.getElementById('btn-mode-gradient').classList.add('active');
     document.getElementById('btn-mode-surface').classList.remove('active');
+    document.getElementById('btn-mode-gradient').setAttribute('aria-pressed', 'true');
+    document.getElementById('btn-mode-surface').setAttribute('aria-pressed', 'false');
     renderChart();
   });
   document.getElementById('btn-mode-surface').addEventListener('click', () => {
     state.elevMode = 'surface';
     document.getElementById('btn-mode-surface').classList.add('active');
     document.getElementById('btn-mode-gradient').classList.remove('active');
+    document.getElementById('btn-mode-surface').setAttribute('aria-pressed', 'true');
+    document.getElementById('btn-mode-gradient').setAttribute('aria-pressed', 'false');
     renderChart();
   });
 }

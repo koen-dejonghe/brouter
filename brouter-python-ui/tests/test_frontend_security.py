@@ -26,3 +26,18 @@ def test_release_two_guards_and_import_preservation_are_present():
     assert "URL.createObjectURL" in main
     assert "MultiLineString" in gpx
     assert "file exceeds 2 MB" in main
+
+
+def test_release_three_structure_and_accessibility():
+    geometry = (ROOT / "static/js/geometry.js").read_text()
+    gpx = (ROOT / "static/js/gpx.js").read_text()
+    template = (ROOT / "templates/index.html").read_text()
+    css = (ROOT / "static/css/sidebar.css").read_text()
+
+    assert "segmentDistanceMeters" in geometry
+    assert "from './geometry.js'" in gpx
+    assert 'role="combobox"' in template
+    assert 'role="status"' in template
+    assert 'aria-controls="waypoint-list"' in template
+    assert "@media (max-width: 760px)" in css
+    assert ":focus-visible" in css

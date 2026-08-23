@@ -17,32 +17,33 @@
 </head>
 <body>
 
-<div id="sidebar">
-  <button id="sidebar-toggle" title="Collapse sidebar">‹</button>
+<aside id="sidebar" aria-label="Route planning controls">
+  <button id="sidebar-toggle" type="button" title="Collapse sidebar" aria-controls="sidebar-content" aria-expanded="true" aria-label="Collapse route planning controls">‹</button>
   <div id="sidebar-content">
 
   <!-- Search -->
   <div id="search-wrap">
+    <label class="sr-only" for="search-input">Search for a place or address</label>
     <div id="search-row">
-      <input type="text" id="search-input" placeholder="Search place or address…" autocomplete="off" />
-      <button id="btn-search" title="Search">⌕</button>
+      <input type="search" id="search-input" placeholder="Search place or address…" autocomplete="off" role="combobox" aria-autocomplete="list" aria-controls="search-dropdown" aria-expanded="false" />
+      <button id="btn-search" type="button" title="Search" aria-label="Search">⌕</button>
     </div>
-    <div id="search-dropdown"></div>
+    <div id="search-dropdown" role="listbox" aria-label="Search results"></div>
   </div>
 
   <!-- Waypoint controls -->
   <div id="waypoint-controls">
-    <button id="btn-add-waypoint">+ Add waypoint</button>
-    <button id="btn-reverse" disabled title="Reverse route order">⇅ Reverse</button>
-    <button id="btn-close-loop" disabled title="Append start as endpoint">↺ Loop</button>
-    <button id="btn-clear-all" disabled title="Remove all waypoints">✕ Clear</button>
-    <button id="btn-toggle-waypoints" title="Show/hide waypoint list">☰ Waypoints</button>
+    <button id="btn-add-waypoint" type="button" aria-pressed="false">+ Add waypoint</button>
+    <button id="btn-reverse" type="button" disabled title="Reverse route order">⇅ Reverse</button>
+    <button id="btn-close-loop" type="button" disabled title="Append start as endpoint">↺ Loop</button>
+    <button id="btn-clear-all" type="button" disabled title="Remove all waypoints">✕ Clear</button>
+    <button id="btn-toggle-waypoints" type="button" aria-controls="waypoint-list" aria-expanded="false" title="Show/hide waypoint list">☰ Waypoints</button>
   </div>
-  <div id="waypoint-list"></div>
+  <div id="waypoint-list" role="list" aria-label="Route waypoints"></div>
 
   <!-- Profile -->
   <div class="field">
-    <label>Profile</label>
+    <label for="profile">Profile</label>
     <select id="profile">
       {% for p in profiles %}
       <option value="{{ p }}" {% if p == 'trekking' %}selected{% endif %}>{{ p }}</option>
@@ -60,13 +61,13 @@
       <div id="params-loading">Loading…</div>
     </div>
     <div style="padding: 4px 10px 10px;">
-      <button id="btn-reset-params">Reset to defaults</button>
+       <button id="btn-reset-params" type="button">Reset to defaults</button>
     </div>
   </details>
 
   <!-- Alternative -->
   <div class="field">
-    <label>Alternative route</label>
+    <label for="alternativeidx">Alternative route</label>
     <select id="alternativeidx">
       <option value="0">0 — primary</option>
       <option value="1">1</option>
@@ -77,7 +78,7 @@
 
   <!-- Output format -->
   <div class="field">
-    <label>Download format</label>
+    <label for="format">Download format</label>
     <select id="format">
       <option value="gpx">GPX</option>
       <option value="geojson">GeoJSON</option>
@@ -88,7 +89,7 @@
 
   <!-- Track name -->
   <div class="field">
-    <label>Track name</label>
+    <label for="trackname">Track name</label>
     <input type="text" id="trackname" />
   </div>
 
@@ -107,15 +108,15 @@
   <!-- Actions -->
   <div id="route-actions">
     <button id="btn-import-gpx" type="button">Upload Route</button>
-    <button id="btn-download" disabled>Download Route</button>
+    <button id="btn-download" type="button" disabled>Download Route</button>
     <input type="file" id="gpx-file-input" accept=".gpx,application/gpx+xml" hidden />
   </div>
-  <div id="surface-enrich-progress" class="import-progress" style="display:none;">
+  <div id="surface-enrich-progress" class="import-progress" role="status" aria-live="polite" style="display:none;">
     <span class="spinner" aria-hidden="true"></span>
     <span>Fetching surface details via BRouter…</span>
   </div>
 
-  <div id="status" class="status"></div>
+  <div id="status" class="status" role="status" aria-live="polite" aria-atomic="true"></div>
 
   <!-- Stats -->
   <div id="stats" style="display:none;">
@@ -124,23 +125,23 @@
   </div>
 
   </div><!-- /#sidebar-content -->
-</div>
+</aside>
 
 <!-- Map column: map + elevation panel -->
-<div id="map-column">
-  <div id="map"></div>
+<main id="map-column">
+  <div id="map" role="region" aria-label="Interactive route map"></div>
 
   <div id="profile-panel" class="collapsed">
     <!-- Header -->
     <div id="profile-panel-header">
       <span id="profile-panel-title">Elevation profile</span>
-      <button class="mode-btn active" id="btn-mode-gradient">Gradient</button>
-      <button class="mode-btn"        id="btn-mode-surface">Surface</button>
-      <button id="btn-toggle-panel">▲ Show</button>
+      <button class="mode-btn active" type="button" id="btn-mode-gradient" aria-pressed="true">Gradient</button>
+      <button class="mode-btn" type="button" id="btn-mode-surface" aria-pressed="false">Surface</button>
+      <button id="btn-toggle-panel" type="button" aria-controls="profile-panel-body" aria-expanded="false">▲ Show</button>
     </div>
     <!-- Chart -->
     <div id="profile-panel-body">
-      <svg id="elev-svg"></svg>
+       <svg id="elev-svg" role="img" aria-labelledby="profile-panel-title" tabindex="0"></svg>
       <div id="elev-hairline"></div>
       <div id="elev-tooltip"></div>
       <div id="sel-stats-card"></div>
@@ -148,9 +149,9 @@
     <!-- Surface legend -->
     <div id="surface-legend"></div>
   </div>
-</div>
+</main>
 
-<div id="context-menu" style="display:none"></div>
+<div id="context-menu" role="menu" aria-label="Map actions" style="display:none"></div>
 
 <!-- Jinja2 data bridge: pass server-side data to ES modules -->
 <script>
