@@ -3,12 +3,11 @@ import { initControls } from './controls.js';
 
 import { renderWaypointList, addWaypoint, removeWaypoint, reverseWaypoints, clearAllWaypoints, closeLoop, insertWaypointAt, undo, _addWaypointRaw, replaceWaypoints } from './waypoints.js';
 import { makeLocationIcon, refreshAllIcons } from './icons.js';
-import { buildRouteParams, currentLonlats, scheduleRoute, renderRoute, stitchLegs, getProfileOverrides, clearRenderedRouteOnly, getRouteContextInsertion } from './route.js';
-import { renderChart, clearElevationProfile, initElevModeButtons } from './elevation.js';
+import { buildRouteParams, currentLonlats, scheduleRoute, renderRoute, stitchLegs, getProfileOverrides, clearRenderedRouteOnly, getRouteContextInsertion, routeContextKey, invalidateRouteWork } from './route.js';
+import { renderChart, initElevModeButtons } from './elevation.js';
 import { initGeocoder } from './geocoder.js';
 import { setStatus, saveRoute, clearSavedRoute, storageKey } from './utils.js';
-import { parseGpxString, buildSmartWaypointsFromGeoJson } from './gpx.js';
-import { parseTags, surfaceCategory } from './stats.js';
+import { parseGpxString, buildSmartWaypointsFromGeoJson, geometryParts } from './gpx.js';
 
 // ── Map setup ──────────────────────────────────────────────────────────────
 
@@ -307,7 +306,7 @@ function renderPoisFromStore() {
   state.poiLayer.addTo(state.map);
 }
 
-async function fetchPoisNow() {
+async function fetchPoisNow(seq) {
   if (!state.poiEnabled) {
     clearPoiLayer();
     return;
@@ -316,11 +315,14 @@ async function fetchPoisNow() {
   const zoom = state.map.getZoom();
   const types = [...state.poiTypes].join(',');
   const statusEl = document.getElementById('poi-status');
+  const controller = new AbortController();
+  state.poiAbortController = controller;
   if (statusEl) statusEl.textContent = 'Loading POIs…';
   try {
     const bbox = [bounds.getSouth(), bounds.getWest(), bounds.getNorth(), bounds.getEast()].join(',');
-    const resp = await fetch(`/pois?bbox=${encodeURIComponent(bbox)}&zoom=${zoom}&types=${encodeURIComponent(types)}`);
+    const resp = await fetch(`/pois?bbox=${encodeURIComponent(bbox)}&zoom=${zoom}&types=${encodeURIComponent(types)}`, { signal: controller.signal });
     const payload = await resp.json();
+    if (seq !== state.poiRequestSeq || controller.signal.aborted || !state.poiEnabled) return;
     if (!resp.ok) throw new Error(payload.error || 'POI request failed');
     if (payload.zoom_blocked) {
       clearPoiLayer();
@@ -328,17 +330,23 @@ async function fetchPoisNow() {
       if (statusEl) statusEl.textContent = `Zoom in to at least z${payload.min_zoom} to show POIs.`;
       return;
     }
+    state.poiStore.clear();
     updatePoiStore(payload);
     renderPoisFromStore();
     if (statusEl) statusEl.textContent = `POIs visible: ${state.poiStore.size}`;
   } catch (e) {
-    if (statusEl) statusEl.textContent = `POI load failed: ${e.message}`;
+    if (e.name !== 'AbortError' && seq === state.poiRequestSeq && statusEl) statusEl.textContent = `POI load failed: ${e.message}`;
+  } finally {
+    if (seq === state.poiRequestSeq) state.poiAbortController = null;
   }
 }
 
 function schedulePoiFetch() {
   if (state.poiFetchTimer) clearTimeout(state.poiFetchTimer);
-  state.poiFetchTimer = setTimeout(fetchPoisNow, 220);
+  state.poiAbortController?.abort();
+  state.poiRequestSeq += 1;
+  const seq = state.poiRequestSeq;
+  state.poiFetchTimer = setTimeout(() => fetchPoisNow(seq), 220);
 }
 
 const POI_PREFS_KEY = 'brouter-poi-prefs';
@@ -372,6 +380,11 @@ function initPois() {
   state.poiEnabled = !!enabledEl?.checked;
   enabledEl?.addEventListener('change', e => {
     state.poiEnabled = e.target.checked;
+    if (!state.poiEnabled) {
+      state.poiAbortController?.abort();
+      state.poiStore.clear();
+      clearPoiLayer();
+    }
     savePoiPrefs();
     schedulePoiFetch();
   });
@@ -535,6 +548,12 @@ function updateChangedBadge() {
 }
 
 async function loadProfileParams(profile) {
+  state.profileParamsRequestSeq += 1;
+  const seq = state.profileParamsRequestSeq;
+  state.profileParamsAbortController?.abort();
+  const controller = new AbortController();
+  state.profileParamsAbortController = controller;
+  state.profileParamsReady = false;
   const body = document.getElementById('profile-settings-body');
   body.replaceChildren();
   const loading = document.createElement('div');
@@ -543,14 +562,21 @@ async function loadProfileParams(profile) {
   body.appendChild(loading);
   updateChangedBadge();
   try {
-    const resp = await fetch(`/profile-params/${encodeURIComponent(profile)}`);
-    state.profileParams = await resp.json();
-  } catch {
+    const resp = await fetch(`/profile-params/${encodeURIComponent(profile)}`, { signal: controller.signal });
+    const params = await resp.json();
+    if (!resp.ok) throw new Error(params.error || 'Failed to load params');
+    if (seq !== state.profileParamsRequestSeq || controller.signal.aborted || document.getElementById('profile').value !== profile) return false;
+    state.profileParams = params;
+    state.profileParamsProfile = profile;
+    state.profileParamsReady = true;
+  } catch (err) {
+    if (err.name === 'AbortError' || seq !== state.profileParamsRequestSeq) return false;
     loading.style.color = '#fca5a5';
     loading.textContent = 'Failed to load params.';
-    return;
+    return false;
   }
   renderProfileParams(profile);
+  return true;
 }
 
 function renderProfileParams(profile) {
@@ -647,7 +673,9 @@ function restoreRoute() {
   try {
     const raw = localStorage.getItem('brouter-route');
     if (!raw) return;
-    const { wps, cache } = JSON.parse(raw);
+    const saved = JSON.parse(raw);
+    const { wps, cache, context } = saved;
+    if (saved.version !== 2 || saved.source !== 'brouter' || !context || routeContextKey(context) !== routeContextKey()) return;
     if (!wps || wps.length < 2 || cache.length !== wps.length - 1) return;
     for (const { lat, lon } of wps) _addWaypointRaw(lat, lon);
     state.legCache = cache;
@@ -674,71 +702,32 @@ function routeLengthFromCoords(coords) {
   return total;
 }
 
-function buildSurfaceSegmentsFromMessages(messages, scale = 1) {
-  if (!messages || messages.length < 2) return [];
-  const cols = messages[0];
-  const iDist = cols.indexOf('Distance');
-  const iWay = cols.indexOf('WayTags');
-  if (iDist < 0) return [];
-
-  const bins = [];
-  let cum = 0;
-  let prev = 0;
-  for (let r = 1; r < messages.length; r++) {
-    const row = messages[r];
-    const dist = parseInt(row[iDist], 10) || 0;
-    cum += dist;
-    const tags = iWay >= 0 ? parseTags(row[iWay]) : {};
-    bins.push({
-      dist_start_m: prev * scale,
-      dist_end_m: cum * scale,
-      category: surfaceCategory(tags),
-      confidence: 'high',
+async function enrichImportedSurface(geojson, signal) {
+  const parts = geometryParts(geojson);
+  let offset = 0;
+  const surfaceSegments = [];
+  let high = 0, medium = 0, low = 0;
+  for (const coordinates of parts) {
+    const body = { type: 'FeatureCollection', features: [{ type: 'Feature', geometry: { type: 'LineString', coordinates }, properties: {} }] };
+    const resp = await fetch('/surface-enrich', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal,
     });
-    prev = cum;
-  }
-
-  if (!bins.length) return [];
-  const merged = [bins[0]];
-  for (let i = 1; i < bins.length; i++) {
-    const cur = merged[merged.length - 1];
-    const nxt = bins[i];
-    if (cur.category === nxt.category && cur.confidence === nxt.confidence) {
-      cur.dist_end_m = nxt.dist_end_m;
-    } else {
-      merged.push(nxt);
+    const payload = await resp.json();
+    if (!resp.ok) throw new Error(payload.error || 'Surface enrichment failed');
+    for (const segment of payload.surface_segments || []) {
+      surfaceSegments.push({ ...segment, dist_start_m: segment.dist_start_m + offset, dist_end_m: segment.dist_end_m + offset });
     }
+    const len = Number(payload.track_length_m) || routeLengthFromCoords(coordinates);
+    high += len * (payload.surface_stats?.highPct || 0) / 100;
+    medium += len * (payload.surface_stats?.mediumPct || 0) / 100;
+    low += len * (payload.surface_stats?.lowPct || 0) / 100;
+    offset += len;
   }
-  return merged;
-}
-
-async function enrichImportedSurfaceViaBrouter(geojson, waypoints) {
-  const lonlats = waypoints
-    .map(w => `${w.lon.toFixed(6)},${w.lat.toFixed(6)}`)
-    .join('|');
-  const params = buildRouteParams(lonlats, null);
-  const resp = await fetch(`/route?${params}`);
-  const brouter = await resp.json();
-  if (!resp.ok) throw new Error(brouter.error || 'BRouter enrichment failed');
-
-  const msgs = brouter?.features?.[0]?.properties?.messages;
-  const brouterProps = brouter?.features?.[0]?.properties || {};
-  if (!msgs || msgs.length < 2) return { surfaceSegments: [], surfaceStats: null };
-
-  const brouterCoords = brouter?.features?.[0]?.geometry?.coordinates;
-  const importedCoords = geojson?.features?.[0]?.geometry?.coordinates;
-  const brouterLen = routeLengthFromCoords(brouterCoords);
-  const importedLen = routeLengthFromCoords(importedCoords);
-  const scale = brouterLen > 0 && importedLen > 0 ? (importedLen / brouterLen) : 1;
-  const surfaceSegments = buildSurfaceSegmentsFromMessages(msgs, scale);
+  const denom = offset || 1;
   return {
     surfaceSegments,
-    surfaceStats: { highPct: 100, mediumPct: 0, lowPct: 0 },
-    routeMetrics: {
-      trackLength: brouterProps['track-length'] ?? null,
-      totalTime: brouterProps['total-time'] ?? null,
-      totalEnergy: brouterProps['total-energy'] ?? null,
-    },
+    surfaceStats: { highPct: Math.round(high / denom * 100), mediumPct: Math.round(medium / denom * 100), lowPct: Math.round(low / denom * 100) },
+    trackLength: offset,
   };
 }
 
@@ -746,18 +735,23 @@ function initGpxImport() {
   const btn = document.getElementById('btn-import-gpx');
   const input = document.getElementById('gpx-file-input');
   const enrichProgress = document.getElementById('surface-enrich-progress');
-  let importSeq = 0;
 
   btn.addEventListener('click', () => input.click());
 
   input.addEventListener('change', async () => {
-    importSeq += 1;
-    const seq = importSeq;
+    invalidateRouteWork();
+    const seq = state.gpxImportSeq;
     const file = input.files?.[0];
     if (!file) return;
+    if (file.size > 2 * 1024 * 1024) {
+      setStatus('GPX import failed: file exceeds 2 MB.', 'error');
+      input.value = '';
+      return;
+    }
 
     try {
       const xml = await file.text();
+      if (seq !== state.gpxImportSeq) return;
       const parsed = parseGpxString(xml);
       const waypoints = buildSmartWaypointsFromGeoJson(parsed.geojson);
 
@@ -765,7 +759,10 @@ function initGpxImport() {
 
       clearRenderedRouteOnly();
       state.routeSource = 'imported';
+      state.importedRoute = { originalXml: xml, fileName: file.name, geojson: parsed.geojson };
+      state.undoStack = [];
       replaceWaypoints(waypoints, false);
+      parsed.geojson.features[0].properties['track-length'] = geometryParts(parsed.geojson).reduce((sum, part) => sum + routeLengthFromCoords(part), 0);
       renderRoute(parsed.geojson, true);
 
       const viaCount = Math.max(0, waypoints.length - 2);
@@ -774,30 +771,31 @@ function initGpxImport() {
       const smartInfo = sm
         ? ` Smart: ${sm.selectedCount} pts (cap ${sm.adaptiveCap}, spacing ${(sm.adaptiveSpacingM / 1000).toFixed(1)} km).`
         : '';
-      setStatus(`Loaded GPX${name}: ${waypoints.length} waypoints (${viaCount} via).${smartInfo} Fetching surface via BRouter…`, 'info');
+      setStatus(`Loaded GPX${name}: ${waypoints.length} waypoints (${viaCount} via).${smartInfo} Fetching surface details…`, 'info');
 
       enrichProgress.style.display = 'inline-flex';
       try {
-        const enrich = await enrichImportedSurfaceViaBrouter(parsed.geojson, waypoints);
-        if (seq === importSeq) {
+        const controller = new AbortController();
+        state.gpxAbortController = controller;
+        const enrich = await enrichImportedSurface(parsed.geojson, controller.signal);
+        if (seq === state.gpxImportSeq && state.routeSource === 'imported') {
           parsed.geojson.features[0].properties.surface_segments = enrich.surfaceSegments || [];
           parsed.geojson.features[0].properties.surface_stats = enrich.surfaceStats || null;
-          if (enrich.routeMetrics) {
-            parsed.geojson.features[0].properties['track-length'] = enrich.routeMetrics.trackLength;
-            parsed.geojson.features[0].properties['total-time'] = enrich.routeMetrics.totalTime;
-            parsed.geojson.features[0].properties['total-energy'] = enrich.routeMetrics.totalEnergy;
-          }
+          parsed.geojson.features[0].properties['track-length'] = enrich.trackLength;
+          state.importedRoute.geojson = parsed.geojson;
           renderRoute(parsed.geojson, false);
           setStatus(`Loaded GPX${name}: ${waypoints.length} waypoints (${viaCount} via).${smartInfo}`, 'ok');
         }
-      } catch {
-        if (seq === importSeq) setStatus('Surface enrichment via BRouter failed. Route loaded without detailed surface tags.', 'info');
+      } catch (err) {
+        if (err.name !== 'AbortError' && seq === state.gpxImportSeq) setStatus('Surface enrichment failed. Route loaded without detailed surface tags.', 'info');
       } finally {
-        if (seq === importSeq) enrichProgress.style.display = 'none';
+        if (seq === state.gpxImportSeq) enrichProgress.style.display = 'none';
       }
     } catch (err) {
-      enrichProgress.style.display = 'none';
-      setStatus(`GPX import failed: ${err.message}`, 'error');
+      if (seq === state.gpxImportSeq) {
+        enrichProgress.style.display = 'none';
+        setStatus(`GPX import failed: ${err.message}`, 'error');
+      }
     } finally {
       input.value = '';
     }
@@ -824,13 +822,13 @@ refreshTrackName();
 const savedProfile = localStorage.getItem('brouter-profile');
 if (savedProfile && document.querySelector(`#profile option[value="${savedProfile}"]`))
   document.getElementById('profile').value = savedProfile;
-loadProfileParams(document.getElementById('profile').value);
+const initialProfileLoad = loadProfileParams(document.getElementById('profile').value);
 
 document.getElementById('profile').addEventListener('change', e => {
   localStorage.setItem('brouter-profile', e.target.value);
   refreshTrackName();
-  loadProfileParams(e.target.value);
-  scheduleRoute();
+  invalidateRouteWork();
+  loadProfileParams(e.target.value).then(loaded => { if (loaded) scheduleRoute(); });
 });
 document.getElementById('alternativeidx').addEventListener('change', scheduleRoute);
 
@@ -840,6 +838,16 @@ document.getElementById('btn-download').addEventListener('click', () => {
   if (state.waypoints.length < 2) return;
   const fmt       = document.getElementById('format').value;
   const trackname = document.getElementById('trackname').value.trim() || defaultTrackName();
+  if (state.routeSource === 'imported' && state.importedRoute && fmt === 'gpx' && !state.selectedPois.length) {
+    const blob = new Blob([state.importedRoute.originalXml], { type: 'application/gpx+xml' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = state.importedRoute.fileName || `${trackname}.gpx`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+    return;
+  }
   const qs = buildRouteParams(currentLonlats(), fmt);
   qs.set('trackname', trackname);
   if (fmt === 'gpx' && state.selectedPois.length) qs.set('selected_pois', JSON.stringify(state.selectedPois));
@@ -878,4 +886,4 @@ initPois();
 
 // ── Restore saved route ────────────────────────────────────────────────────
 
-restoreRoute();
+initialProfileLoad.then(loaded => { if (loaded) restoreRoute(); });

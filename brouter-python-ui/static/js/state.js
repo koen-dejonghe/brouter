@@ -12,6 +12,7 @@ export const state = {
   routeHitLayer:     null,   // transparent wide polyline for hover/click
   routeGeom:         null,   // dense [{ lat, lon, cumDist }] from geometry coords
   routeWpSegs:       null,   // routeGeom index of each waypoint (for insertion)
+  routeWpMeasures:   null,   // monotonic route distance of each waypoint
   elevData:          null,
   elevMode:          'gradient', // 'gradient' | 'surface'
   elevSelection:     null,   // { distStart, distEnd } or null
@@ -23,6 +24,12 @@ export const state = {
   profileParams:     [],
   hoverMarker:       null,
   routeTimer:        null,   // debounce handle for auto-route
+  routeRequestSeq:   0,
+  routeAbortController: null,
+  profileParamsRequestSeq: 0,
+  profileParamsAbortController: null,
+  profileParamsProfile: null,
+  profileParamsReady: false,
   clickTimer:        null,   // guard against dblclick zoom
   dragSrcIdx:        null,   // index of row being dragged
   wpListExpanded:    false,  // whether intermediate waypoints are expanded
@@ -37,9 +44,14 @@ export const state = {
   poiEnabled:        false,
   poiTypes:          new Set(['water', 'food', 'shelter']),
   poiFetchTimer:     null,
+  poiRequestSeq:     0,
+  poiAbortController: null,
   poiLoading:        false,
   selectedPois:      [],     // explicitly marked POIs for GPX export
   poiStore:          new Map(), // id -> { id, name, category, lat, lon }
   addPreviewLine:    null,    // temporary line from last waypoint to cursor
   addPreviewLabel:   null,    // distance label for add preview
+  gpxImportSeq:      0,
+  gpxAbortController: null,
+  importedRoute:     null,    // { originalXml, fileName, geojson }
 };

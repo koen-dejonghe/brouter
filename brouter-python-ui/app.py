@@ -482,14 +482,12 @@ def surface_category(tags: dict) -> str:
     if tracktype and tracktype != "grade1":
         return "unpaved"
     if tracktype == "grade1":
-        return "paved"
+        return "unknown"
     if highway:
         if highway in PAVED_HIGHWAYS:
             return "paved"
         if highway in UNPAVED_HIGHWAYS:
             return "unpaved"
-        if highway in {"cycleway", "path", "footway"}:
-            return "paved"
     return "unknown"
 
 
@@ -542,6 +540,12 @@ def route_bbox(coords: list) -> tuple[float, float, float, float]:
 
 def fetch_osm_way_segments(coords: list) -> list[dict]:
     south, west, north, east = route_bbox(coords)
+    origin_lat = (south + north) / 2
+    origin_lon = (west + east) / 2
+    lon_scale = 111320 * cos(origin_lat * pi / 180)
+
+    def project(lon: float, lat: float) -> tuple[float, float]:
+        return ((lon - origin_lon) * lon_scale, (lat - origin_lat) * 111320)
     q = f"""
 [out:json][timeout:25];
 (
@@ -588,17 +592,21 @@ out tags geom;
                 continue
             mid_lat = (lat1 + lat2) / 2
             mid_lon = (lon1 + lon2) / 2
-            scale = 111320 * cos(mid_lat * pi / 180)
+            ax, ay = project(lon1, lat1)
+            bx, by = project(lon2, lat2)
             out.append(
                 {
                     "tags": tags,
                     "heading": seg_heading_deg(lon1, lat1, lon2, lat2),
                     "mid_lat": mid_lat,
                     "mid_lon": mid_lon,
-                    "ax": lon1 * scale,
-                    "ay": lat1 * 111320,
-                    "bx": lon2 * scale,
-                    "by": lat2 * 111320,
+                    "ax": ax,
+                    "ay": ay,
+                    "bx": bx,
+                    "by": by,
+                    "origin_lat": origin_lat,
+                    "origin_lon": origin_lon,
+                    "lon_scale": lon_scale,
                 }
             )
     return out
@@ -639,9 +647,12 @@ def enrich_surface_segments(coords: list) -> tuple[list[dict], float, dict]:
     enriched = []
     conf_m = {"high": 0.0, "medium": 0.0, "low": 0.0}
     for rs in route_segments:
-        scale = 111320 * cos(rs["mid_lat"] * pi / 180)
-        px = rs["mid_lon"] * scale
-        py = rs["mid_lat"] * 111320
+        if osm_segments:
+            frame = osm_segments[0]
+            px = (rs["mid_lon"] - frame["origin_lon"]) * frame["lon_scale"]
+            py = (rs["mid_lat"] - frame["origin_lat"]) * 111320
+        else:
+            px = py = 0.0
         best = None
         best_score = float("inf")
 
@@ -661,7 +672,8 @@ def enrich_surface_segments(coords: list) -> tuple[list[dict], float, dict]:
             )
             if dist_m > 65:
                 continue
-            hd = heading_diff_deg(rs["heading"], osm_segment["heading"])
+            raw_hd = heading_diff_deg(rs["heading"], osm_segment["heading"])
+            hd = min(raw_hd, abs(180 - raw_hd))
             if hd > 80:
                 continue
             score = dist_m + 0.4 * hd

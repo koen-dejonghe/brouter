@@ -138,3 +138,34 @@ def test_rate_limit_is_applied(client, monkeypatch):
     second = client.get("/pois?bbox=0,0,1,1&zoom=1")
     assert first.status_code == 200
     assert second.status_code == 429
+
+
+def test_surface_category_does_not_guess_unspecified_paths_are_paved():
+    assert application.surface_category({"highway": "path"}) == "unknown"
+    assert application.surface_category({"highway": "cycleway"}) == "unknown"
+    assert application.surface_category({"tracktype": "grade1"}) == "unknown"
+    assert application.surface_category({"surface": "asphalt"}) == "paved"
+
+
+def test_opposite_way_direction_is_accepted(monkeypatch):
+    monkeypatch.setattr(
+        application,
+        "fetch_osm_way_segments",
+        lambda coords: [
+            {
+                "tags": {"surface": "asphalt"},
+                "heading": -90.0,
+                "mid_lat": 0.0,
+                "mid_lon": 0.0005,
+                "ax": 111.32,
+                "ay": 0.0,
+                "bx": 0.0,
+                "by": 0.0,
+                "origin_lat": 0.0,
+                "origin_lon": 0.0,
+                "lon_scale": 111320.0,
+            }
+        ],
+    )
+    segments, _, _ = application.enrich_surface_segments([[0.0, 0.0], [0.001, 0.0]])
+    assert segments[0]["category"] == "paved"

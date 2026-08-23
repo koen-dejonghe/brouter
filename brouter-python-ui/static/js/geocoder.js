@@ -10,6 +10,15 @@ export function initGeocoder() {
   let activeIdx    = -1;
   let lastResults  = [];
   let searchMarker = null;
+  let searchSeq = 0;
+  let searchAbortController = null;
+
+  function invalidateSearch() {
+    searchSeq += 1;
+    clearTimeout(searchTimer);
+    searchAbortController?.abort();
+    searchAbortController = null;
+  }
 
   function openDropdown()  { dropdown.classList.add('open'); }
   function closeDropdown() { dropdown.classList.remove('open'); activeIdx = -1; }
@@ -61,6 +70,7 @@ export function initGeocoder() {
   }
 
   function selectResult(idx) {
+    invalidateSearch();
     const f   = lastResults[idx];
     const [lon, lat] = f.geometry.coordinates;
     const p   = f.properties;
@@ -104,19 +114,25 @@ export function initGeocoder() {
 
   async function doSearch(q) {
     if (q.length < 3) { closeDropdown(); return; }
+    invalidateSearch();
+    const seq = searchSeq;
+    const controller = new AbortController();
+    searchAbortController = controller;
     try {
       const url  = `https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=6&lang=en`;
-      const resp = await fetch(url);
+      const resp = await fetch(url, { signal: controller.signal });
       const data = await resp.json();
+      if (!resp.ok) throw new Error('Search failed');
+      if (seq !== searchSeq || controller.signal.aborted || input.value.trim() !== q) return;
       renderResults(data.features || []);
-    } catch {
-      closeDropdown();
+    } catch (err) {
+      if (err.name !== 'AbortError' && seq === searchSeq) closeDropdown();
     }
   }
 
   // Debounced input
   input.addEventListener('input', () => {
-    clearTimeout(searchTimer);
+    invalidateSearch();
     const q = input.value.trim();
     if (!q) { closeDropdown(); return; }
     searchTimer = setTimeout(() => doSearch(q), 300);
@@ -143,6 +159,7 @@ export function initGeocoder() {
         doSearch(input.value.trim());
       }
     } else if (e.key === 'Escape') {
+      invalidateSearch();
       closeDropdown();
     }
   });
@@ -152,6 +169,6 @@ export function initGeocoder() {
 
   // Close dropdown on outside click
   document.addEventListener('mousedown', e => {
-    if (!document.getElementById('search-wrap').contains(e.target)) closeDropdown();
+    if (!document.getElementById('search-wrap').contains(e.target)) { invalidateSearch(); closeDropdown(); }
   });
 }

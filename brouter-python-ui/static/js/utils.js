@@ -10,10 +10,13 @@ export function setStatus(msg, type) {
 
 // ── Route persistence (localStorage) ──────────────────────────────────────
 
-export function saveRoute() {
+export function saveRoute(context = null) {
   try {
-    if (state.waypoints.length < 2 || state.legCache.some(l => l === null)) return;
+    if (state.routeSource !== 'brouter' || state.waypoints.length < 2 || state.legCache.some(l => l === null)) return;
     const data = {
+      version: 2,
+      source: 'brouter',
+      context,
       wps:   state.waypoints.map(w => ({ lat: w.lat, lon: w.lon })),
       cache: state.legCache,
     };

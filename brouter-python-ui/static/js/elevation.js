@@ -76,6 +76,7 @@ function parseElevData(geojson) {
     const lon  = iLon >= 0 ? parseInt(row[iLon], 10) / 1e6 : null;
     const lat  = iLat >= 0 ? parseInt(row[iLat], 10) / 1e6 : null;
     const tags = iWay >= 0 ? parseTags(row[iWay]) : {};
+    if (!Number.isFinite(elev)) continue;
     const prevElev = pts.length ? pts[pts.length - 1].elev : elev;
     const slope = dist > 0 ? (elev - prevElev) / dist * 100 : 0;
     pts.push({
@@ -88,14 +89,18 @@ function parseElevData(geojson) {
 }
 
 function parseElevDataFromGeometry(geojson) {
-  const coords = geojson?.features?.[0]?.geometry?.coordinates;
+  const geometry = geojson?.features?.[0]?.geometry;
+  const coords = geometry?.type === 'MultiLineString'
+    ? geometry.coordinates.reduce((best, part) => part.length > best.length ? part : best, [])
+    : geometry?.coordinates;
   const surfaceSegs = geojson?.features?.[0]?.properties?.surface_segments || [];
   if (!coords || coords.length < 2) return null;
   const hasElev = coords.some(c => c.length >= 3 && Number.isFinite(Number(c[2])));
+  if (!hasElev) return null;
 
   const pts = [];
   let cum = 0;
-  let prevElev = hasElev && Number.isFinite(Number(coords[0][2])) ? Number(coords[0][2]) : 0;
+  let prevElev = null;
 
   function surfaceColorAt(d) {
     if (!surfaceSegs.length) return '#334155';
@@ -114,8 +119,8 @@ function parseElevDataFromGeometry(geojson) {
     const c = coords[i];
     const lon = Number(c[0]);
     const lat = Number(c[1]);
-    const elevRaw = c.length >= 3 ? Number(c[2]) : prevElev;
-    const elev = Number.isFinite(elevRaw) ? elevRaw : prevElev;
+    const elevRaw = c.length >= 3 ? Number(c[2]) : NaN;
+    const elev = Number.isFinite(elevRaw) ? elevRaw : null;
     if (i > 0) {
       const p = coords[i - 1];
       const dLat = (lat - Number(p[1])) * 111320;
@@ -124,7 +129,7 @@ function parseElevDataFromGeometry(geojson) {
       cum += dist;
     }
     const dDist = i > 0 ? (cum - pts[pts.length - 1].cumDist) : 0;
-    const slope = dDist > 0 ? (elev - prevElev) / dDist * 100 : 0;
+    const slope = dDist > 0 && elev !== null && prevElev !== null ? (elev - prevElev) / dDist * 100 : 0;
     pts.push({
       cumDist: cum,
       elev,
@@ -133,9 +138,9 @@ function parseElevDataFromGeometry(geojson) {
       colorGradient: gradientColor(slope),
       colorSurface: surfaceColorAt(cum),
     });
-    prevElev = elev;
+    if (elev !== null) prevElev = elev;
   }
-  return pts;
+  return pts.filter(p => p.elev !== null);
 }
 
 // ── Chart rendering ────────────────────────────────────────────────────────
@@ -144,7 +149,10 @@ const PAD_L = 42, PAD_R = 8, PAD_T = 10, PAD_B = 20;
 
 export function drawElevationProfile(geojson) {
   state.elevData = parseElevData(geojson);
-  if (!state.elevData || state.elevData.length < 2) return;
+  if (!state.elevData || state.elevData.length < 2 || state.elevData[state.elevData.length - 1].cumDist <= 0) {
+    clearElevationProfile();
+    return;
+  }
   const panel = document.getElementById('profile-panel');
   panel.classList.remove('collapsed');
   document.getElementById('btn-toggle-panel').textContent = '▼ Hide';
@@ -491,7 +499,13 @@ svgEl.addEventListener('mouseleave', () => {
   // Keep live overlay; user may mouseup outside
 });
 document.addEventListener('mouseup', () => {
-  if (state.svgDragState) { state.svgDragState = null; svgEl.classList.remove('selecting'); }
+  if (state.svgDragState) {
+    state.svgDragState = null;
+    svgEl.classList.remove('selecting');
+    removeSelectionOverlay();
+    document.getElementById('elev-sel-band')?.remove();
+    renderChart();
+  }
 });
 
 function drawSelBand(d0, d1) {

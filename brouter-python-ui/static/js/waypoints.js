@@ -1,18 +1,23 @@
 import { state } from './state.js';
 import { makeIcon, refreshAllIcons, highlightWaypoint, unhighlightWaypoint } from './icons.js';
 import { setStatus, clearSavedRoute } from './utils.js';
-import { scheduleRoute } from './route.js';         // circular — safe, only called at runtime
-import { clearElevationProfile, removeSelectionOverlay } from './elevation.js'; // circular — safe
+import { scheduleRoute, clearRenderedRouteOnly, renderRoute } from './route.js'; // circular — safe, only called at runtime
 
 // ── Undo stack ─────────────────────────────────────────────────────────────
 
 function snapshot() {
-  return { wps: state.waypoints.map(w => ({ lat: w.lat, lon: w.lon })), legs: [...state.legCache] };
+  return {
+    wps: state.waypoints.map(w => ({ lat: w.lat, lon: w.lon })),
+    legs: [...state.legCache],
+    routeSource: state.routeSource,
+    importedRoute: state.importedRoute,
+  };
 }
 
 function ensureRoutedMode() {
   if (state.routeSource === 'brouter') return;
   state.routeSource = 'brouter';
+  state.importedRoute = null;
   state.legCache = new Array(Math.max(0, state.waypoints.length - 1)).fill(null);
   setStatus('Switched to routed mode after waypoint edit.', 'info');
 }
@@ -29,9 +34,13 @@ export function undo() {
   state.waypoints = [];
   for (const { lat, lon } of snap.wps) _addWaypointRaw(lat, lon);
   state.legCache = snap.legs.slice(0, Math.max(0, state.waypoints.length - 1));
+  state.routeSource = snap.routeSource || 'brouter';
+  state.importedRoute = snap.importedRoute || null;
   refreshAllIcons();
   renderWaypointList();
-  scheduleRoute();
+  if (state.routeSource === 'imported' && state.importedRoute?.geojson) {
+    renderRoute(state.importedRoute.geojson, false);
+  } else scheduleRoute();
 }
 
 // ── Core waypoint operations ───────────────────────────────────────────────
@@ -44,8 +53,8 @@ export function _addWaypointRaw(lat, lon) {
     icon: makeIcon('#64748b', 10), // refreshed afterwards
     draggable: true,
   }).addTo(state.map);
+  marker.on('dragstart', pushUndo);
   marker.on('dragend', () => {
-    pushUndo();
     ensureRoutedMode();
     const ll = marker.getLatLng();
     wp.lat = ll.lat;
@@ -130,8 +139,8 @@ export function insertWaypointAt(index, lat, lon) {
     icon: makeIcon('#64748b', 10),
     draggable: true,
   }).addTo(state.map);
+  marker.on('dragstart', pushUndo);
   marker.on('dragend', () => {
-    pushUndo();
     ensureRoutedMode();
     const ll = marker.getLatLng();
     wp.lat = ll.lat;
@@ -185,23 +194,12 @@ export function clearAllWaypoints() {
   state.waypoints.forEach(w => state.map.removeLayer(w.marker));
   state.waypoints = [];
   state.routeSource = 'brouter';
+  state.importedRoute = null;
   state.legCache = [];
   state.wpListExpanded = false;
   renderWaypointList();
-  if (state.routeLayer)    { state.map.removeLayer(state.routeLayer);    state.routeLayer    = null; }
-  if (state.routeInfoLayer){ state.map.removeLayer(state.routeInfoLayer); state.routeInfoLayer = null; }
-  if (state.routeInfoHandler) {
-    state.map.off('zoomend', state.routeInfoHandler);
-    state.routeInfoHandler = null;
-  }
-  if (state.routeHitLayer) { state.map.removeLayer(state.routeHitLayer); state.routeHitLayer = null; }
-  state.routeGeom = null; state.routeWpSegs = null;
-  removeSelectionOverlay();
-  state.elevSelection = null; state.routeBounds = null; state.routeSegments = null;
-  state.fitRouteControl.setEnabled(false);
-  document.getElementById('stats').style.display = 'none';
+  clearRenderedRouteOnly();
   setStatus('', '');
-  clearElevationProfile();
   clearSavedRoute();
 }
 

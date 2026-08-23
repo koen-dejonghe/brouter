@@ -1,4 +1,5 @@
 function toNum(v) {
+  if (v == null || String(v).trim() === '') return null;
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
 }
@@ -20,13 +21,12 @@ function firstChildByLocalName(el, name) {
   return null;
 }
 
-function parseTrkPoints(doc) {
+function parsePoints(elements) {
   const pts = [];
-  const trkpts = elementsByLocalName(doc, 'trkpt');
-  trkpts.forEach(el => {
+  elements.forEach(el => {
     const lat = toNum(el.getAttribute('lat'));
     const lon = toNum(el.getAttribute('lon'));
-    if (lat == null || lon == null) return;
+    if (lat == null || lon == null || lat < -90 || lat > 90 || lon < -180 || lon > 180) return;
     const eleEl = firstChildByLocalName(el, 'ele');
     const ele = eleEl ? toNum(eleEl.textContent?.trim()) : null;
     pts.push({ lat, lon, ele });
@@ -34,18 +34,18 @@ function parseTrkPoints(doc) {
   return pts;
 }
 
-function parseRtePoints(doc) {
-  const pts = [];
-  const rtepts = elementsByLocalName(doc, 'rtept');
-  rtepts.forEach(el => {
-    const lat = toNum(el.getAttribute('lat'));
-    const lon = toNum(el.getAttribute('lon'));
-    if (lat == null || lon == null) return;
-    const eleEl = firstChildByLocalName(el, 'ele');
-    const ele = eleEl ? toNum(eleEl.textContent?.trim()) : null;
-    pts.push({ lat, lon, ele });
-  });
-  return pts;
+function parseParts(doc) {
+  const parts = [];
+  for (const seg of elementsByLocalName(doc, 'trkseg')) {
+    const points = parsePoints(elementsByLocalName(seg, 'trkpt'));
+    if (points.length >= 2) parts.push(points);
+  }
+  if (parts.length) return parts;
+  for (const rte of elementsByLocalName(doc, 'rte')) {
+    const points = parsePoints(elementsByLocalName(rte, 'rtept'));
+    if (points.length >= 2) parts.push(points);
+  }
+  return parts;
 }
 
 function cumulativeGeometry(points) {
@@ -122,7 +122,7 @@ function adaptiveDefaults(totalM, turnCount, majorTurnCount) {
 
   const capByDistance = Math.round(totalKm / 3) + 18;
   const capByTurns = 18 + Math.round(turnCount * 0.7) + Math.round(majorTurnCount * 0.8);
-  const maxWaypoints = clamp(Math.max(capByDistance, capByTurns), 30, 220);
+  const maxWaypoints = clamp(Math.max(capByDistance, capByTurns), 30, 90);
 
   return { spacingM, maxWaypoints };
 }
@@ -159,16 +159,17 @@ export function parseGpxString(xmlText) {
   const parserErr = doc.querySelector('parsererror');
   if (parserErr) throw new Error('Invalid GPX file');
 
-  let pts = parseTrkPoints(doc);
-  if (pts.length < 2) pts = parseRtePoints(doc);
-  if (pts.length < 2) throw new Error('GPX contains no usable track geometry');
-
-  const coords = pts.map(p => p.ele == null ? [p.lon, p.lat] : [p.lon, p.lat, p.ele]);
+  const parts = parseParts(doc);
+  if (!parts.length) throw new Error('GPX contains no usable track geometry');
+  const coords = parts.map(part => part.map(p => p.ele == null ? [p.lon, p.lat] : [p.lon, p.lat, p.ele]));
+  const geometry = coords.length === 1
+    ? { type: 'LineString', coordinates: coords[0] }
+    : { type: 'MultiLineString', coordinates: coords };
   const geojson = {
     type: 'FeatureCollection',
     features: [{
       type: 'Feature',
-      geometry: { type: 'LineString', coordinates: coords },
+      geometry,
       properties: {},
     }],
   };
@@ -183,8 +184,19 @@ export function parseGpxString(xmlText) {
   return { geojson, name };
 }
 
+export function geometryParts(geojson) {
+  const geometry = geojson?.features?.[0]?.geometry;
+  if (geometry?.type === 'LineString') return [geometry.coordinates];
+  if (geometry?.type === 'MultiLineString') return geometry.coordinates;
+  return [];
+}
+
+function primaryCoords(geojson) {
+  return geometryParts(geojson).reduce((best, part) => part.length > best.length ? part : best, []);
+}
+
 export function buildRegularWaypointsFromGeoJson(geojson, intervalKm = 10) {
-  const coords = geojson?.features?.[0]?.geometry?.coordinates;
+  const coords = primaryCoords(geojson);
   if (!coords || coords.length < 2) return [];
 
   const points = coords.map(c => ({ lat: c[1], lon: c[0] }));
@@ -223,7 +235,7 @@ export function buildRegularWaypointsFromGeoJson(geojson, intervalKm = 10) {
 }
 
 export function buildSmartWaypointsFromGeoJson(geojson) {
-  const coords = geojson?.features?.[0]?.geometry?.coordinates;
+  const coords = primaryCoords(geojson);
   if (!coords || coords.length < 2) return [];
 
   const points = coords.map(c => ({ lat: c[1], lon: c[0] }));

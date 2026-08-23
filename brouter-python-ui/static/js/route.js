@@ -15,7 +15,7 @@ export function getProfileOverrides() {
     const value = input.type === 'checkbox' ? (input.checked ? '1' : '0') : input.value;
     overrides.push([`profile:${input.dataset.param}`, value]);
   });
-  return overrides;
+  return overrides.sort((a, b) => a[0].localeCompare(b[0]));
 }
 
 function isParamChanged(input) {
@@ -125,14 +125,30 @@ function buildRouteInfoMarkers(routeGeom) {
 
 // ── Route query building ───────────────────────────────────────────────────
 
-export function buildRouteParams(lonlats, fmt) {
+export function captureRouteContext() {
+  return {
+    profile: document.getElementById('profile').value,
+    alternativeidx: document.getElementById('alternativeidx').value,
+    overrides: getProfileOverrides(),
+  };
+}
+
+export function routeContextKey(context = captureRouteContext()) {
+  return `${context.profile}|${context.alternativeidx}|${context.overrides.map(([k, v]) => `${k}=${v}`).join(',')}`;
+}
+
+export function waypointKey(points = state.waypoints) {
+  return points.map(w => `${Number(w.lon).toFixed(6)},${Number(w.lat).toFixed(6)}`).join('|');
+}
+
+export function buildRouteParams(lonlats, fmt, context = captureRouteContext()) {
   const params = new URLSearchParams({
     lonlats,
-    profile:        document.getElementById('profile').value,
-    alternativeidx: document.getElementById('alternativeidx').value,
+    profile: context.profile,
+    alternativeidx: context.alternativeidx,
   });
   if (fmt) params.set('format', fmt);
-  for (const [k, v] of getProfileOverrides()) params.append(k, v);
+  for (const [k, v] of context.overrides) params.append(k, v);
   return params;
 }
 
@@ -141,15 +157,14 @@ export function currentLonlats() {
 }
 
 export function routeKey() {
-  const overrides = [...getProfileOverrides()].map(([k, v]) => `${k}=${v}`).join(',');
-  return `${document.getElementById('profile').value}|${document.getElementById('alternativeidx').value}|${overrides}`;
+  return routeContextKey();
 }
 
 // ── Fetch a single leg (wp[i] → wp[i+1]) ─────────────────────────────────
 
-export async function fetchLeg(i) {
-  const lonlats = `${state.waypoints[i].lon.toFixed(6)},${state.waypoints[i].lat.toFixed(6)}|${state.waypoints[i+1].lon.toFixed(6)},${state.waypoints[i+1].lat.toFixed(6)}`;
-  const resp = await fetch(`/route?${buildRouteParams(lonlats, null)}`);
+export async function fetchLeg(i, waypoints = state.waypoints, context = captureRouteContext(), signal = null) {
+  const lonlats = `${waypoints[i].lon.toFixed(6)},${waypoints[i].lat.toFixed(6)}|${waypoints[i+1].lon.toFixed(6)},${waypoints[i+1].lat.toFixed(6)}`;
+  const resp = await fetch(`/route?${buildRouteParams(lonlats, null, context)}`, { signal });
   const data = await resp.json();
   if (!resp.ok) throw new Error(data.error || 'Routing failed');
   return data;
@@ -210,8 +225,10 @@ export function renderRoute(data, fitBounds) {
 
   const segments   = buildSurfaceLines(data);
   state.routeSegments = segments;
-  const geomCoords = data.features?.[0]?.geometry?.coordinates;
-  const allLatLngs = geomCoords ? geomCoords.map(c => [c[1], c[0]]) : [];
+  const geometry = data.features?.[0]?.geometry;
+  const geomParts = geometry?.type === 'MultiLineString' ? geometry.coordinates : geometry?.type === 'LineString' ? [geometry.coordinates] : [];
+  const geomCoords = geomParts.reduce((best, part) => part.length > best.length ? part : best, []);
+  const allLatLngs = geomParts.flatMap(part => part.map(c => [c[1], c[0]]));
   if (allLatLngs.length) { state.routeBounds = L.latLngBounds(allLatLngs); state.fitRouteControl.setEnabled(true); }
 
   if (segments) {
@@ -245,18 +262,22 @@ export function renderRoute(data, fitBounds) {
       }
       return { lat: c[1], lon: c[0], cumDist: cum };
     });
+    let minIdx = 0;
     state.routeWpSegs = state.waypoints.map(w => {
-      let best = 0, bestD = Infinity;
-      for (let i = 0; i < state.routeGeom.length; i++) {
+      let best = minIdx, bestD = Infinity;
+      for (let i = minIdx; i < state.routeGeom.length; i++) {
         const d = (state.routeGeom[i].lat - w.lat) ** 2 + (state.routeGeom[i].lon - w.lon) ** 2;
         if (d < bestD) { bestD = d; best = i; }
       }
+      minIdx = best;
       return best;
     });
+    state.routeWpMeasures = state.routeWpSegs.map(i => state.routeGeom[i].cumDist);
   }
 
-  if (allLatLngs.length) {
-    state.routeHitLayer = L.polyline(allLatLngs, { weight: 20, opacity: 0.001, interactive: true }).addTo(state.map);
+  if (geomParts.length) {
+    const hitLines = geomParts.map(part => L.polyline(part.map(c => [c[1], c[0]]), { weight: 20, opacity: 0.001, interactive: true }));
+    state.routeHitLayer = L.featureGroup(hitLines).addTo(state.map);
     state.routeHitLayer.on('mousemove', onRouteMouseMove);
     state.routeHitLayer.on('mouseout',  onRouteMouseOut);
     state.routeHitLayer.on('mousedown', onRouteMouseDown);
@@ -299,6 +320,7 @@ export function clearRenderedRouteOnly() {
   if (state.routeHitLayer) { state.map.removeLayer(state.routeHitLayer); state.routeHitLayer = null; }
   state.routeGeom = null;
   state.routeWpSegs = null;
+  state.routeWpMeasures = null;
   removeSelectionOverlay();
   state.elevSelection = null;
   state.routeBounds = null;
@@ -315,32 +337,23 @@ function onRouteMouseDown(e) {
   if (!state.routeGeom || !state.routeWpSegs || state.routeGeom.length < 2) return;
   L.DomEvent.stopPropagation(e);
 
+  pushUndo();
+
   if (state.routeSource !== 'brouter') {
     state.routeSource = 'brouter';
+    state.importedRoute = null;
     state.legCache = new Array(Math.max(0, state.waypoints.length - 1)).fill(null);
     setStatus('Switched to routed mode after waypoint edit.', 'info');
   }
 
-  const { lat, lng } = e.latlng;
-
-  let bestIdx = 0, bestDist = Infinity;
-  for (let i = 0; i < state.routeGeom.length; i++) {
-    const p = state.routeGeom[i];
-    const d = (p.lat - lat) ** 2 + (p.lon - lng) ** 2;
-    if (d < bestDist) { bestDist = d; bestIdx = i; }
-  }
-
-  let insertIdx = state.waypoints.length - 1;
-  for (let i = 0; i < state.routeWpSegs.length - 1; i++) {
-    if (bestIdx <= state.routeWpSegs[i + 1]) { insertIdx = i + 1; break; }
-  }
-
-  pushUndo();
+  const snap = findNearestRoutePoint(e.latlng.lat, e.latlng.lng);
+  if (!snap) return;
+  const insertIdx = routeInsertIndexByDistance(snap.routeDist);
 
   if (state.hoverMarker) { state.map.removeLayer(state.hoverMarker); state.hoverMarker = null; }
 
-  const snapLat = state.routeGeom[bestIdx].lat;
-  const snapLon = state.routeGeom[bestIdx].lon;
+  const snapLat = snap.lat;
+  const snapLon = snap.lon;
   const wp = { lat: snapLat, lon: snapLon, marker: null };
   state.waypoints.splice(insertIdx, 0, wp);
   state.legCache.splice(insertIdx, 0, null);
@@ -350,8 +363,8 @@ function onRouteMouseDown(e) {
     icon: makeIcon('#64748b', 10),
     draggable: true,
   }).addTo(state.map);
+  marker.on('dragstart', pushUndo);
   marker.on('dragend', () => {
-    pushUndo();
     const ll = marker.getLatLng();
     wp.lat = ll.lat; wp.lon = ll.lng;
     const idx = state.waypoints.indexOf(wp);
@@ -391,30 +404,42 @@ function onRouteMouseDown(e) {
   container.addEventListener('mouseup',   onUp);
 }
 
-function findNearestRoutePoint(lat, lon) {
-  if (!state.routeGeom || !state.routeGeom.length) return null;
-  let bestIdx = 0;
+export function findNearestRoutePoint(lat, lon) {
+  if (!state.routeGeom || state.routeGeom.length < 2) return null;
+  const target = state.map.latLngToContainerPoint([lat, lon]);
+  let bestIdx = 1;
   let bestDist = Infinity;
-  for (let i = 0; i < state.routeGeom.length; i++) {
-    const p = state.routeGeom[i];
-    const d = (p.lat - lat) ** 2 + (p.lon - lon) ** 2;
+  let bestT = 0;
+  for (let i = 1; i < state.routeGeom.length; i++) {
+    const a = state.map.latLngToContainerPoint([state.routeGeom[i - 1].lat, state.routeGeom[i - 1].lon]);
+    const b = state.map.latLngToContainerPoint([state.routeGeom[i].lat, state.routeGeom[i].lon]);
+    const vx = b.x - a.x, vy = b.y - a.y;
+    const len2 = vx * vx + vy * vy;
+    const t = len2 ? Math.max(0, Math.min(1, ((target.x - a.x) * vx + (target.y - a.y) * vy) / len2)) : 0;
+    const x = a.x + t * vx, y = a.y + t * vy;
+    const d = (x - target.x) ** 2 + (y - target.y) ** 2;
     if (d < bestDist) {
       bestDist = d;
       bestIdx = i;
+      bestT = t;
     }
   }
+  const a = state.routeGeom[bestIdx - 1];
+  const b = state.routeGeom[bestIdx];
   return {
     idx: bestIdx,
-    lat: state.routeGeom[bestIdx].lat,
-    lon: state.routeGeom[bestIdx].lon,
+    lat: a.lat + (b.lat - a.lat) * bestT,
+    lon: a.lon + (b.lon - a.lon) * bestT,
+    routeDist: a.cumDist + (b.cumDist - a.cumDist) * bestT,
+    distancePx: Math.sqrt(bestDist),
   };
 }
 
-function routeInsertIndexByGeomIdx(bestIdx) {
-  if (!state.routeWpSegs || !state.routeWpSegs.length) return Math.max(0, state.waypoints.length - 1);
+function routeInsertIndexByDistance(routeDist) {
+  if (!state.routeWpMeasures || !state.routeWpMeasures.length) return Math.max(0, state.waypoints.length - 1);
   let insertIdx = state.waypoints.length - 1;
-  for (let i = 0; i < state.routeWpSegs.length - 1; i++) {
-    if (bestIdx <= state.routeWpSegs[i + 1]) {
+  for (let i = 0; i < state.routeWpMeasures.length - 1; i++) {
+    if (routeDist <= state.routeWpMeasures[i + 1]) {
       insertIdx = i + 1;
       break;
     }
@@ -428,36 +453,59 @@ export function getRouteContextInsertion(lat, lon) {
   return {
     snapLat: snap.lat,
     snapLon: snap.lon,
-    insertIdx: routeInsertIndexByGeomIdx(snap.idx),
+    insertIdx: routeInsertIndexByDistance(snap.routeDist),
   };
 }
 
 // ── Auto-route with debounce ───────────────────────────────────────────────
 
-export function scheduleRoute() {
+export function invalidateImportedGpxWork() {
+  state.gpxImportSeq += 1;
+  state.gpxAbortController?.abort();
+  state.gpxAbortController = null;
+  const progress = document.getElementById('surface-enrich-progress');
+  if (progress) progress.style.display = 'none';
+}
+
+export function invalidateRouteWork({ invalidateImport = true } = {}) {
+  state.routeRequestSeq += 1;
   if (state.routeTimer) { clearTimeout(state.routeTimer); state.routeTimer = null; }
+  state.routeAbortController?.abort();
+  state.routeAbortController = null;
+  if (invalidateImport) invalidateImportedGpxWork();
+}
+
+export function scheduleRoute() {
+  invalidateRouteWork();
+  const seq = state.routeRequestSeq;
   if (state.routeSource !== 'brouter') return;
   if (state.waypoints.length < 2) {
     clearRenderedRouteOnly();
     return;
   }
-  state.routeTimer = setTimeout(calculateRoute, 300);
+  state.routeTimer = setTimeout(() => calculateRoute(seq), 300);
 }
 
-export async function calculateRoute() {
+export async function calculateRoute(seq = state.routeRequestSeq) {
   if (state.routeSource !== 'brouter') return;
-  const n = state.waypoints.length;
+  const waypoints = state.waypoints.map(({ lat, lon }) => ({ lat, lon }));
+  const n = waypoints.length;
   if (n < 2) return;
 
-  const key = routeKey();
-  if (key !== state.lastRouteKey) { state.lastRouteKey = key; state.legCache = new Array(n - 1).fill(null); }
+  const context = captureRouteContext();
+  const key = routeContextKey(context);
+  const wKey = waypointKey(waypoints);
+  let nextCache = key === state.lastRouteKey ? state.legCache.slice(0, n - 1) : new Array(n - 1).fill(null);
 
-  while (state.legCache.length < n - 1) state.legCache.push(null);
-  state.legCache.length = n - 1;
+  while (nextCache.length < n - 1) nextCache.push(null);
 
-  const nullIdxs = state.legCache.reduce((acc, v, i) => { if (v === null) acc.push(i); return acc; }, []);
+  const isCurrent = () => seq === state.routeRequestSeq && state.routeSource === 'brouter' && waypointKey() === wKey && routeContextKey() === key;
+  const nullIdxs = nextCache.reduce((acc, v, i) => { if (v === null) acc.push(i); return acc; }, []);
   if (!nullIdxs.length) {
-    renderRoute(stitchLegs(state.legCache), false);
+    if (!isCurrent()) return;
+    state.legCache = nextCache;
+    state.lastRouteKey = key;
+    renderRoute(stitchLegs(nextCache), false);
     setStatus('Route calculated.', 'ok');
     return;
   }
@@ -469,14 +517,20 @@ export async function calculateRoute() {
   hideSelStats();
 
   try {
+    const controller = new AbortController();
+    state.routeAbortController = controller;
     await Promise.all(nullIdxs.map(async i => {
-      state.legCache[i] = await fetchLeg(i);
+      nextCache[i] = await fetchLeg(i, waypoints, context, controller.signal);
     }));
-    renderRoute(stitchLegs(state.legCache), wasEmpty);
-    saveRoute();
+    if (!isCurrent() || controller.signal.aborted) return;
+    state.legCache = nextCache;
+    state.lastRouteKey = key;
+    renderRoute(stitchLegs(nextCache), wasEmpty);
+    saveRoute(context);
     setStatus('Route calculated.', 'ok');
   } catch (err) {
-    nullIdxs.forEach(i => { if (state.legCache[i] === null) state.legCache[i] = null; });
-    setStatus('Network error: ' + err.message, 'error');
+    if (err.name !== 'AbortError' && isCurrent()) setStatus('Network error: ' + err.message, 'error');
+  } finally {
+    if (seq === state.routeRequestSeq) state.routeAbortController = null;
   }
 }

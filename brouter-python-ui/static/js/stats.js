@@ -24,12 +24,9 @@ export function surfaceCategory(tags) {
     if (UNPAVED_SURFACES.has(tags.surface)) return 'unpaved';
   }
   if (tags.tracktype && tags.tracktype !== 'grade1') return 'unpaved';
-  if (tags.tracktype === 'grade1')                   return 'paved';
   if (tags.highway) {
     if (PAVED_HIGHWAYS.has(tags.highway))   return 'paved';
     if (UNPAVED_HIGHWAYS.has(tags.highway)) return 'unpaved';
-    if (tags.highway === 'cycleway' || tags.highway === 'path' || tags.highway === 'footway')
-      return 'paved';
   }
   return 'unknown';
 }
@@ -39,7 +36,9 @@ export function surfaceCategory(tags) {
  * Returns [{ latlngs, category, cumDistStart, cumDistEnd }] or null.
  */
 export function buildSurfaceLines(geojson) {
-  const coords = geojson?.features?.[0]?.geometry?.coordinates;
+  const geometry = geojson?.features?.[0]?.geometry;
+  if (geometry?.type === 'MultiLineString') return null;
+  const coords = geometry?.coordinates;
   const msgs   = geojson?.features?.[0]?.properties?.messages;
   const imported = geojson?.features?.[0]?.properties?.surface_segments;
   if (!coords || coords.length < 2) return null;
@@ -142,10 +141,12 @@ export function buildSurfaceLines(geojson) {
 export function computeRouteStats(geojson) {
   const msgs   = geojson?.features?.[0]?.properties?.messages;
   const props  = geojson?.features?.[0]?.properties || {};
-  const coords = geojson?.features?.[0]?.geometry?.coordinates;
+  const geometry = geojson?.features?.[0]?.geometry;
+  const parts = geometry?.type === 'MultiLineString' ? geometry.coordinates : geometry?.type === 'LineString' ? [geometry.coordinates] : [];
+  const coords = parts[0];
   const imported = geojson?.features?.[0]?.properties?.surface_segments;
   const importedStats = geojson?.features?.[0]?.properties?.surface_stats;
-  if ((!msgs || msgs.length < 2) && (!coords || coords.length < 2)) return null;
+  if ((!msgs || msgs.length < 2) && !parts.some(part => part.length >= 2)) return null;
 
   let pavedM = 0, unpavedM = 0, unknownM = 0;
   let confidence = null;
@@ -179,38 +180,41 @@ export function computeRouteStats(geojson) {
   }
 
   let gainM = 0, lossM = 0;
+  let elevationPairs = 0;
   let maxGrade = -Infinity, minGrade = Infinity;
   let geomTotalM = 0;
-  if (coords && coords.length >= 2) {
-    const hasElev = coords.some(c => c.length >= 3 && Number.isFinite(Number(c[2])));
-    const cumDist = new Float64Array(coords.length);
-    for (let i = 1; i < coords.length; i++) {
-      const [lon1, lat1] = coords[i - 1];
-      const [lon2, lat2] = coords[i];
+  for (const part of parts) {
+    if (part.length < 2) continue;
+    const hasElev = part.some(c => c.length >= 3 && Number.isFinite(Number(c[2])));
+    const cumDist = new Float64Array(part.length);
+    for (let i = 1; i < part.length; i++) {
+      const [lon1, lat1] = part[i - 1];
+      const [lon2, lat2] = part[i];
       const dLat = (lat2 - lat1) * 111320;
       const dLon = (lon2 - lon1) * 111320 * Math.cos((lat1 + lat2) / 2 * Math.PI / 180);
       cumDist[i] = cumDist[i - 1] + Math.sqrt(dLat * dLat + dLon * dLon);
-      geomTotalM = cumDist[i];
       if (hasElev) {
-        const z1 = Number(coords[i - 1][2]);
-        const z2 = Number(coords[i][2]);
+        const z1 = Number(part[i - 1][2]);
+        const z2 = Number(part[i][2]);
         if (Number.isFinite(z1) && Number.isFinite(z2)) {
+          elevationPairs += 1;
           const dElev = z2 - z1;
           if (dElev > 0) gainM += dElev;
           else           lossM += Math.abs(dElev);
         }
       }
     }
+    geomTotalM += cumDist[cumDist.length - 1];
     if (hasElev) {
       const WINDOW_M = 100;
       let j = 0;
-      for (let i = 0; i < coords.length - 1; i++) {
+      for (let i = 0; i < part.length - 1; i++) {
         if (j <= i) j = i + 1;
-        while (j < coords.length - 1 && cumDist[j] - cumDist[i] < WINDOW_M) j++;
+        while (j < part.length - 1 && cumDist[j] - cumDist[i] < WINDOW_M) j++;
         const span = cumDist[j] - cumDist[i];
         if (span < 1) continue;
-        const z1 = Number(coords[i][2]);
-        const z2 = Number(coords[j][2]);
+        const z1 = Number(part[i][2]);
+        const z2 = Number(part[j][2]);
         if (!Number.isFinite(z1) || !Number.isFinite(z2)) continue;
         const grade = (z2 - z1) / span * 100;
         if (grade > maxGrade) maxGrade = grade;
@@ -219,15 +223,16 @@ export function computeRouteStats(geojson) {
     }
   }
 
-  const totalM = pavedM + unpavedM + unknownM || 1;
+  if (pavedM + unpavedM + unknownM === 0 && geomTotalM > 0) unknownM = geomTotalM;
+  const totalM = pavedM + unpavedM + unknownM;
   const displayDistanceM = Number.isFinite(Number(props['track-length']))
     ? Number(props['track-length'])
     : geomTotalM;
   return {
     pavedM, unpavedM, unknownM, totalM,
     displayDistanceM,
-    gainM:    Math.round(gainM),
-    lossM:    Math.round(lossM),
+    gainM:    elevationPairs ? Math.round(gainM) : null,
+    lossM:    elevationPairs ? Math.round(lossM) : null,
     maxGrade: isFinite(maxGrade) ? maxGrade : null,
     minGrade: isFinite(minGrade) ? minGrade : null,
     confidence,
@@ -256,9 +261,9 @@ export function showStats(props, geojson) {
     if (!hasDistanceField && Number.isFinite(s.displayDistanceM) && s.displayDistanceM > 0)
       rows.unshift(`<div>Total distance: <strong>${(s.displayDistanceM / 1000).toFixed(2)} km</strong></div>`);
     const fmt1 = v => (v / 1000).toFixed(2);
-    const pct  = v => ((v / s.totalM) * 100).toFixed(1);
-    rows.push(`<div>Elevation gain: <strong>${s.gainM} m</strong></div>`);
-    rows.push(`<div>Elevation loss: <strong>${s.lossM} m</strong></div>`);
+    const pct  = v => s.totalM > 0 ? ((v / s.totalM) * 100).toFixed(1) : '0.0';
+    if (s.gainM !== null) rows.push(`<div>Elevation gain: <strong>${s.gainM} m</strong></div>`);
+    if (s.lossM !== null) rows.push(`<div>Elevation loss: <strong>${s.lossM} m</strong></div>`);
     if (s.maxGrade !== null)
       rows.push(`<div>Max grade: <strong>${s.maxGrade.toFixed(1)}%</strong> &nbsp; Min grade: <strong>${s.minGrade.toFixed(1)}%</strong></div>`);
     rows.push(`<div style="margin-top:4px"><strong>Surface</strong></div>`);
