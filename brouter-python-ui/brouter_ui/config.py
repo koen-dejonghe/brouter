@@ -38,6 +38,7 @@ class Settings:
     rate_limit_window_s: int
     rate_limit_requests: int
     max_content_length: int
+    max_gpx_file_size: int
 
 
 def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
@@ -70,4 +71,5 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         rate_limit_window_s=_positive_int(env, "RATE_LIMIT_WINDOW_S", 60),
         rate_limit_requests=_positive_int(env, "RATE_LIMIT_REQUESTS", 30),
         max_content_length=_positive_int(env, "MAX_CONTENT_LENGTH", 2097152),
+        max_gpx_file_size=_positive_int(env, "MAX_GPX_FILE_SIZE", 26214400),
     )

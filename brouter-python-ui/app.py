@@ -30,6 +30,7 @@ MAX_ROUTE_POINTS = SETTINGS.max_route_points
 MAX_ENRICH_POINTS = SETTINGS.max_enrich_points
 MAX_BBOX_SPAN_DEG = SETTINGS.max_bbox_span_deg
 MAX_TRACK_NAME_LEN = SETTINGS.max_track_name_len
+MAX_GPX_FILE_SIZE = SETTINGS.max_gpx_file_size
 RATE_LIMIT_WINDOW_S = SETTINGS.rate_limit_window_s
 RATE_LIMIT_REQUESTS = SETTINGS.rate_limit_requests
 app.config["MAX_CONTENT_LENGTH"] = SETTINGS.max_content_length
@@ -696,7 +697,9 @@ def unknown_surface_fallback(coords: list, warning: str | None = None) -> dict:
 
 @app.route("/")
 def index():
-    return render_template("index.html", profiles=PROFILES)
+    return render_template(
+        "index.html", profiles=PROFILES, max_gpx_file_size=MAX_GPX_FILE_SIZE
+    )
 
 
 @app.route("/health/live")

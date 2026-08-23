@@ -9,6 +9,7 @@ import { initGeocoder } from './geocoder.js';
 import { setStatus, saveRoute, clearSavedRoute, storageKey } from './utils.js';
 import { parseGpxString, buildSmartWaypointsFromGeoJson } from './gpx.js';
 import { geometryLengthMeters, geometryParts } from './geometry.js';
+import { parseTags, surfaceCategory } from './stats.js';
 
 // ── Map setup ──────────────────────────────────────────────────────────────
 
@@ -702,7 +703,64 @@ function restoreRoute() {
   }
 }
 
-async function enrichImportedSurface(geojson, signal) {
+function surfaceSegmentsFromBrouterMessages(messages, targetLength) {
+  if (!Array.isArray(messages) || messages.length < 2) return [];
+  const columns = messages[0];
+  const distanceIndex = columns.indexOf('Distance');
+  const tagsIndex = columns.indexOf('WayTags');
+  if (distanceIndex < 0) return [];
+
+  const rows = [];
+  let routedLength = 0;
+  for (let index = 1; index < messages.length; index++) {
+    const distance = Number(messages[index][distanceIndex]);
+    if (!Number.isFinite(distance) || distance <= 0) continue;
+    const category = tagsIndex >= 0
+      ? surfaceCategory(parseTags(String(messages[index][tagsIndex] || '')))
+      : 'unknown';
+    rows.push({ distance, category });
+    routedLength += distance;
+  }
+  if (!rows.length || routedLength <= 0) return [];
+
+  const scale = targetLength > 0 ? targetLength / routedLength : 1;
+  const segments = [];
+  let position = 0;
+  for (const row of rows) {
+    const end = position + row.distance * scale;
+    const previous = segments[segments.length - 1];
+    if (previous?.category === row.category) previous.dist_end_m = end;
+    else segments.push({
+      dist_start_m: position,
+      dist_end_m: end,
+      category: row.category,
+      confidence: 'estimated',
+    });
+    position = end;
+  }
+  return segments;
+}
+
+async function enrichImportedSurfaceViaBrouter(geojson, waypoints, signal) {
+  const lonlats = waypoints
+    .map(waypoint => `${waypoint.lon.toFixed(6)},${waypoint.lat.toFixed(6)}`)
+    .join('|');
+  const response = await fetch(`/route?${buildRouteParams(lonlats, null)}`, { signal });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || 'BRouter surface retrieval failed');
+
+  const targetLength = geometryLengthMeters(geojson);
+  const messages = payload?.features?.[0]?.properties?.messages;
+  const surfaceSegments = surfaceSegmentsFromBrouterMessages(messages, targetLength);
+  if (!surfaceSegments.length) throw new Error('BRouter returned no surface details');
+  return {
+    surfaceSegments,
+    surfaceStats: null,
+    trackLength: targetLength,
+  };
+}
+
+async function enrichImportedSurfaceViaOverpass(geojson, signal) {
   const parts = geometryParts(geojson);
   let offset = 0;
   const surfaceSegments = [];
@@ -743,8 +801,10 @@ function initGpxImport() {
     const seq = state.gpxImportSeq;
     const file = input.files?.[0];
     if (!file) return;
-    if (file.size > 2 * 1024 * 1024) {
-      setStatus('GPX import failed: file exceeds 2 MB.', 'error');
+    const maxBytes = window.APP_CONFIG?.maxGpxFileSize || 25 * 1024 * 1024;
+    if (file.size > maxBytes) {
+      const maxMb = Math.round(maxBytes / 1024 / 1024);
+      setStatus(`GPX import failed: file exceeds ${maxMb} MB.`, 'error');
       input.value = '';
       return;
     }
@@ -777,7 +837,14 @@ function initGpxImport() {
       try {
         const controller = new AbortController();
         state.gpxAbortController = controller;
-        const enrich = await enrichImportedSurface(parsed.geojson, controller.signal);
+        let enrich;
+        try {
+          enrich = await enrichImportedSurfaceViaBrouter(parsed.geojson, waypoints, controller.signal);
+        } catch (brouterError) {
+          if (brouterError.name === 'AbortError') throw brouterError;
+          console.warn('BRouter surface retrieval failed; using geometry matching:', brouterError);
+          enrich = await enrichImportedSurfaceViaOverpass(parsed.geojson, controller.signal);
+        }
         if (seq === state.gpxImportSeq && state.routeSource === 'imported') {
           parsed.geojson.features[0].properties.surface_segments = enrich.surfaceSegments || [];
           parsed.geojson.features[0].properties.surface_stats = enrich.surfaceStats || null;

@@ -25,7 +25,7 @@ def test_release_two_guards_and_import_preservation_are_present():
     assert "state.profileParamsRequestSeq" in main
     assert "URL.createObjectURL" in main
     assert "MultiLineString" in gpx
-    assert "file exceeds 2 MB" in main
+    assert "maxGpxFileSize" in main
 
 
 def test_release_three_structure_and_accessibility():
@@ -41,3 +41,10 @@ def test_release_three_structure_and_accessibility():
     assert 'aria-controls="waypoint-list"' in template
     assert "@media (max-width: 760px)" in css
     assert ":focus-visible" in css
+
+
+def test_imported_surface_uses_brouter_with_geometry_fallback():
+    main = (ROOT / "static/js/main.js").read_text()
+    assert "enrichImportedSurfaceViaBrouter" in main
+    assert "surfaceSegmentsFromBrouterMessages" in main
+    assert "enrichImportedSurfaceViaOverpass" in main

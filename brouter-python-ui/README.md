@@ -39,6 +39,7 @@ Configuration is read from environment variables:
 | `OVERPASS_FALLBACK_URLS` | Two public mirrors | Comma-separated fallbacks |
 | `OVERPASS_TIMEOUT_S` | `35` | Per-endpoint Overpass timeout |
 | `MAX_CONTENT_LENGTH` | `2097152` | Maximum request body bytes |
+| `MAX_GPX_FILE_SIZE` | `26214400` | Maximum browser GPX file size (25 MiB) |
 | `MAX_ROUTE_POINTS` | `100` | Maximum routed waypoints |
 | `MAX_ENRICH_POINTS` | `10000` | Maximum surface-enrichment coordinates |
 | `MAX_BBOX_SPAN_DEG` | `2` | Maximum latitude/longitude query span |

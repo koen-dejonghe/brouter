@@ -113,7 +113,7 @@
   </div>
   <div id="surface-enrich-progress" class="import-progress" role="status" aria-live="polite" style="display:none;">
     <span class="spinner" aria-hidden="true"></span>
-    <span>Fetching surface details via BRouter…</span>
+    <span>Fetching surface details via BRouter...</span>
   </div>
 
   <div id="status" class="status" role="status" aria-live="polite" aria-atomic="true"></div>
@@ -156,6 +156,7 @@
 <!-- Jinja2 data bridge: pass server-side data to ES modules -->
 <script>
   window.PROFILES = {{ profiles | tojson }};
+  window.APP_CONFIG = {{ {"maxGpxFileSize": max_gpx_file_size} | tojson }};
 </script>
 
 <!-- App entry point -->
