@@ -58,6 +58,24 @@
 /* ── Elevation profile — selection / zoom ─────────────────────────── */
 #elev-svg { cursor: crosshair; }
 #elev-svg.selecting { cursor: ew-resize; }
+.elev-context-strip { cursor: zoom-out; }
+.elev-context-strip rect {
+  fill: rgba(15, 23, 42, 0.68);
+  stroke: rgba(148, 163, 184, 0.4);
+  stroke-width: 1;
+}
+.elev-context-strip text {
+  fill: #cbd5e1;
+  font-size: 8px;
+  font-weight: 700;
+  pointer-events: none;
+}
+.elev-context-strip:hover rect,
+.elev-context-strip:focus rect {
+  fill: rgba(37, 99, 235, 0.48);
+  stroke: #93c5fd;
+}
+.elev-context-strip:focus { outline: none; }
 
 #sel-stats-card {
   display: none;

@@ -147,6 +147,7 @@ function parseElevDataFromGeometry(geojson) {
 // ── Chart rendering ────────────────────────────────────────────────────────
 
 const PAD_L = 42, PAD_R = 8, PAD_T = 10, PAD_B = 20;
+const CONTEXT_SHARE = 0.10;
 
 export function drawElevationProfile(geojson) {
   state.elevData = parseElevData(geojson);
@@ -178,24 +179,33 @@ export function renderChart() {
 
   function xOf(d) {
     if (!sel) return PAD_L + (d / totalDist) * chartW;
-    if (d <= d0) return PAD_L + (d0 > 0 ? (d / d0) * 0.20 * chartW : 0);
-    if (d <= d1) return PAD_L + 0.20 * chartW + ((d - d0) / (d1 - d0)) * 0.60 * chartW;
+    if (d <= d0) return PAD_L + (d0 > 0 ? (d / d0) * CONTEXT_SHARE * chartW : 0);
+    if (d <= d1) return PAD_L + CONTEXT_SHARE * chartW + ((d - d0) / (d1 - d0)) * (1 - 2 * CONTEXT_SHARE) * chartW;
     const tail = totalDist - d1;
-    return PAD_L + 0.80 * chartW + (tail > 0 ? ((d - d1) / tail) * 0.20 * chartW : 0);
+    return PAD_L + (1 - CONTEXT_SHARE) * chartW + (tail > 0 ? ((d - d1) / tail) * CONTEXT_SHARE * chartW : 0);
   }
   function distOf(x) {
     const rel = x - PAD_L;
     if (!sel) return (rel / chartW) * totalDist;
-    if (rel <= 0.20 * chartW) return d0 > 0 ? (rel / (0.20 * chartW)) * d0 : 0;
-    if (rel <= 0.80 * chartW) return d0 + ((rel - 0.20 * chartW) / (0.60 * chartW)) * (d1 - d0);
+    if (rel <= CONTEXT_SHARE * chartW) return d0 > 0 ? (rel / (CONTEXT_SHARE * chartW)) * d0 : 0;
+    if (rel <= (1 - CONTEXT_SHARE) * chartW) return d0 + ((rel - CONTEXT_SHARE * chartW) / ((1 - 2 * CONTEXT_SHARE) * chartW)) * (d1 - d0);
     const tail = totalDist - d1;
-    return d1 + (tail > 0 ? ((rel - 0.80 * chartW) / (0.20 * chartW)) * tail : 0);
+    return d1 + (tail > 0 ? ((rel - (1 - CONTEXT_SHARE) * chartW) / (CONTEXT_SHARE * chartW)) * tail : 0);
   }
 
-  const minElev   = Math.min(...state.elevData.map(p => p.elev));
-  const maxElev   = Math.max(...state.elevData.map(p => p.elev));
-  const elevRange = Math.max(maxElev - minElev, 10);
-  function yOf(e) { return PAD_T + (1 - (e - minElev) / elevRange) * (H - PAD_T - PAD_B); }
+  const scalePoints = sel
+    ? state.elevData.filter(point => point.cumDist >= d0 && point.cumDist <= d1)
+    : state.elevData;
+  const rawMinElev = Math.min(...scalePoints.map(point => point.elev));
+  const rawMaxElev = Math.max(...scalePoints.map(point => point.elev));
+  const rawRange = Math.max(rawMaxElev - rawMinElev, 10);
+  const minElev = rawMinElev - rawRange * 0.08;
+  const maxElev = rawMaxElev + rawRange * 0.08;
+  const elevRange = maxElev - minElev;
+  function yOf(e, context = false) {
+    const clamped = context ? Math.max(minElev, Math.min(maxElev, e)) : e;
+    return PAD_T + (1 - (clamped - minElev) / elevRange) * (H - PAD_T - PAD_B);
+  }
 
   const ns = 'http://www.w3.org/2000/svg';
   svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
@@ -203,10 +213,11 @@ export function renderChart() {
 
   // Draw full profile
   const colorKey = state.elevMode === 'gradient' ? 'colorGradient' : 'colorSurface';
-  let prevX = xOf(0), prevY = yOf(state.elevData[0].elev);
+  let prevX = xOf(0), prevY = yOf(state.elevData[0].elev, !!sel && d0 > 0);
   for (let i = 0; i < state.elevData.length; i++) {
     const pt   = state.elevData[i];
-    const curX = xOf(pt.cumDist), curY = yOf(pt.elev);
+    const context = !!sel && (pt.cumDist < d0 || pt.cumDist > d1);
+    const curX = xOf(pt.cumDist), curY = yOf(pt.elev, context);
     const poly = document.createElementNS(ns, 'polygon');
     poly.setAttribute('points', `${prevX},${yBase} ${prevX},${prevY} ${curX},${curY} ${curX},${yBase}`);
     poly.setAttribute('fill', pt[colorKey]);
@@ -232,11 +243,12 @@ export function renderChart() {
   }
 
   // X axis
-  const totalKm = totalDist / 1000;
-  const xStep   = niceStep(totalKm, 5);
-  for (let km = 0; km <= totalKm + xStep * 0.5; km += xStep) {
-    const x = xOf(km * 1000);
-    if (x > W - PAD_R + 1) break;
+  const axisStartM = sel ? d0 : 0;
+  const axisEndM = sel ? d1 : totalDist;
+  const xStepM = niceStep((axisEndM - axisStartM) / 1000, 5) * 1000;
+  const firstTickM = Math.ceil(axisStartM / xStepM) * xStepM;
+  for (let distanceM = firstTickM; distanceM <= axisEndM + xStepM * 0.25; distanceM += xStepM) {
+    const x = xOf(distanceM);
     const line = document.createElementNS(ns, 'line');
     line.setAttribute('x1', x); line.setAttribute('x2', x);
     line.setAttribute('y1', PAD_T); line.setAttribute('y2', yBase);
@@ -245,28 +257,34 @@ export function renderChart() {
     const txt = document.createElementNS(ns, 'text');
     txt.setAttribute('x', x); txt.setAttribute('y', H - 5);
     txt.setAttribute('text-anchor', 'middle'); txt.setAttribute('font-size', '9'); txt.setAttribute('fill', '#94a3b8');
-    txt.textContent = km.toFixed(km < 10 ? 1 : 0) + 'km';
+    const km = distanceM / 1000;
+    txt.textContent = km.toFixed(xStepM < 1000 ? 1 : 0) + 'km';
     svg.appendChild(txt);
   }
 
   // Selection overlay: gray film + boundary lines
   if (sel) {
     const xL = xOf(d0), xR = xOf(d1);
-    const filmColor = 'rgba(15,23,42,0.52)';
-    if (xL > PAD_L) {
+    const makeContextStrip = (side, x, width) => {
+      if (width <= 1) return;
+      const group = document.createElementNS(ns, 'g');
+      group.classList.add('elev-context-strip');
+      group.dataset.side = side;
+      group.setAttribute('role', 'button');
+      group.setAttribute('tabindex', '0');
+      group.setAttribute('aria-label', 'Return to full route profile');
       const r = document.createElementNS(ns, 'rect');
-      r.setAttribute('x', PAD_L); r.setAttribute('y', PAD_T);
-      r.setAttribute('width', xL - PAD_L); r.setAttribute('height', H - PAD_T - PAD_B);
-      r.setAttribute('fill', filmColor); r.setAttribute('pointer-events', 'none');
-      svg.appendChild(r);
-    }
-    if (xR < W - PAD_R) {
-      const r = document.createElementNS(ns, 'rect');
-      r.setAttribute('x', xR); r.setAttribute('y', PAD_T);
-      r.setAttribute('width', W - PAD_R - xR); r.setAttribute('height', H - PAD_T - PAD_B);
-      r.setAttribute('fill', filmColor); r.setAttribute('pointer-events', 'none');
-      svg.appendChild(r);
-    }
+      r.setAttribute('x', x); r.setAttribute('y', PAD_T);
+      r.setAttribute('width', width); r.setAttribute('height', H - PAD_T - PAD_B);
+      const text = document.createElementNS(ns, 'text');
+      text.setAttribute('x', x + width / 2); text.setAttribute('y', PAD_T + 15);
+      text.setAttribute('text-anchor', 'middle');
+      text.textContent = 'Full view';
+      group.append(r, text);
+      svg.appendChild(group);
+    };
+    makeContextStrip('left', PAD_L, xL - PAD_L);
+    makeContextStrip('right', xR, W - PAD_R - xR);
     const lL = document.createElementNS(ns, 'line');
     lL.setAttribute('x1', xL); lL.setAttribute('x2', xL);
     lL.setAttribute('y1', PAD_T); lL.setAttribute('y2', yBase);
@@ -289,6 +307,7 @@ export function renderChart() {
   state.elevData._distMin  = 0;
   state.elevData._distMax  = totalDist;
   state.elevData._totalDist = totalDist;
+  svg.classList.toggle('zoomed', !!sel);
 
   updateSurfaceLegend();
 }
@@ -443,6 +462,7 @@ export function onRouteMouseOut() {
 // ── Elevation profile drag-to-select ─────────────────────────────────────
 
 svgEl.addEventListener('mousedown', e => {
+  if (e.target.closest?.('.elev-context-strip')) return;
   if (!state.elevData || !state.elevData._distOf) return;
   e.preventDefault();
   const rect = svgEl.getBoundingClientRect();
@@ -475,6 +495,7 @@ svgEl.addEventListener('mousemove', e => {
 });
 
 svgEl.addEventListener('mouseup', e => {
+  if (e.target.closest?.('.elev-context-strip')) return;
   if (!state.svgDragState) return;
   const rect  = svgEl.getBoundingClientRect();
   const x     = e.clientX - rect.left;
@@ -491,12 +512,32 @@ svgEl.addEventListener('mouseup', e => {
       removeSelectionOverlay();
       renderChart();
     }
-  } else {
-    clearSelection();
   }
   state.svgDragState = null;
   svgEl.classList.remove('selecting');
 });
+
+function activateContextStrip(event) {
+  const strip = event.target.closest?.('.elev-context-strip');
+  if (!strip) return false;
+  event.preventDefault();
+  event.stopPropagation();
+  clearSelection();
+  return true;
+}
+
+svgEl.addEventListener('click', activateContextStrip);
+svgEl.addEventListener('keydown', event => {
+  if ((event.key === 'Enter' || event.key === ' ') && activateContextStrip(event)) return;
+  if (event.key === 'Escape' && state.elevSelection) {
+    event.preventDefault();
+    clearSelection();
+  }
+});
+
+svgEl.addEventListener('touchend', event => {
+  activateContextStrip(event);
+}, { passive: false });
 
 svgEl.addEventListener('mouseleave', () => {
   // Keep live overlay; user may mouseup outside

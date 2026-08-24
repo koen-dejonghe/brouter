@@ -58,3 +58,13 @@ def test_grade_extremes_use_robust_sustained_windows():
     assert "quantile(grades, 0.95)" in geometry
     assert "sustainedGradeExtremes" in stats
     assert "sustainedGradeExtremes" in elevation
+
+
+def test_elevation_zoom_keeps_clickable_context_strips():
+    elevation = (ROOT / "static/js/elevation.js").read_text()
+    css = (ROOT / "static/css/elevation.css").read_text()
+    assert "CONTEXT_SHARE = 0.10" in elevation
+    assert "elev-context-strip" in elevation
+    assert "Return to full route profile" in elevation
+    assert "activateContextStrip" in elevation
+    assert ".elev-context-strip" in css
